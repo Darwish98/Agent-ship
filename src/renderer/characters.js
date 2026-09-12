@@ -59,28 +59,51 @@ const CrewArt = (() => {
   }
 
   // Body block modeled on Claude's pixel mark: solid rect, two cutout eyes,
-  // side arm tabs, and two leg tabs. Color and hat vary per agent/role.
+  // side arm tabs. Legs are split into their own groups (each with a
+  // fill-box transform-origin pinned at the hip) so CSS can swing them like
+  // a walk cycle without touching the rest of the sprite.
   function bodyMarkup(color) {
     return `
       <rect x="-12" y="-4" width="24" height="20" fill="${color.body}" />
       <rect x="-16" y="6" width="32" height="6" fill="${color.body}" />
-      <rect x="-8" y="16" width="4" height="8" fill="${color.body}" />
-      <rect x="4" y="16" width="4" height="8" fill="${color.body}" />
+      <g class="leg leg-l"><rect x="-8" y="16" width="4" height="8" fill="${color.body}" /></g>
+      <g class="leg leg-r"><rect x="4" y="16" width="4" height="8" fill="${color.body}" /></g>
       <rect x="-9" y="0" width="4" height="8" fill="${EYE}" />
       <rect x="5" y="0" width="4" height="8" fill="${EYE}" />
     `;
   }
 
-  function svgFor(event, x, y) {
-    const color = colorFor(event.sessionId);
+  function truncate(str, n) {
+    return str.length > n ? `${str.slice(0, n - 1)}…` : str;
+  }
+
+  // Nameplate is a two-row badge: role on top (small colored pill so it
+  // reads as a job title), agent name below in the larger bar. Both rows
+  // get their own background so they stay legible over the floor tiles.
+  function svgFor(event, key, x, y) {
+    const color = colorFor(key);
     const hat = hatFor(event.role);
+    const role = truncate(event.role || 'Agent', 16);
+    const name = truncate(event.agentName || 'Agent', 14);
+    const task = event.task
+      ? `<text class="task-text" x="0" y="82" text-anchor="middle">${escapeXml(truncate(event.task, 26))}</text>`
+      : '';
     return `
-      <g class="crew" id="crew-${cssEscape(event.sessionId)}" style="transform: translate(${x}px, ${y}px)">
-        ${bodyMarkup(color)}
-        ${accessoryMarkup(hat, color.dark)}
-        <rect class="tag-bg" x="-34" y="34" width="68" height="16" rx="4" fill="#1c222c" stroke="#3a4452" stroke-width="1" />
-        <text class="tag-text" x="0" y="45" text-anchor="middle">${escapeXml(event.agentName)}</text>
-        <text class="role-text" x="0" y="60" text-anchor="middle">${escapeXml(event.role)}</text>
+      <g class="crew" id="crew-${cssEscape(key)}" data-session-id="${escapeXml(event.sessionId)}" style="transform: translate(${x}px, ${y}px)">
+        <ellipse class="crew-shadow" cx="0" cy="27" rx="15" ry="4" />
+        <g class="sprite-flip">
+          <g class="sprite">
+            ${bodyMarkup(color)}
+            ${accessoryMarkup(hat, color.dark)}
+          </g>
+        </g>
+        <g class="tag" transform="translate(0, 33)">
+          <rect class="role-bg" x="-32" y="0" width="64" height="13" rx="6" fill="${color.dark}" />
+          <text class="role-text" x="0" y="9" text-anchor="middle">${escapeXml(role)}</text>
+          <rect class="tag-bg" x="-36" y="15" width="72" height="16" rx="4" />
+          <text class="tag-text" x="0" y="27" text-anchor="middle">${escapeXml(name)}</text>
+        </g>
+        ${task}
       </g>
     `;
   }

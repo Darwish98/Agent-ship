@@ -17,12 +17,16 @@ function startServer(onEvent) {
     // this just guards against malformed payloads reaching the renderer.
     const event = {
       sessionId: String(body.sessionId || 'unknown'),
+      agentId: String(body.agentId || ''),
       agentName: String(body.agentName || 'Agent'),
       role: String(body.role || 'Agent'),
+      task: String(body.task || ''),
       project: String(body.project || ''),
+      projectPath: String(body.projectPath || ''),
       hookEvent: String(body.hookEvent || ''),
       toolName: String(body.toolName || ''),
       status: String(body.status || ''),
+      subagentDoneId: String(body.subagentDoneId || ''),
       timestamp: Date.now()
     };
 

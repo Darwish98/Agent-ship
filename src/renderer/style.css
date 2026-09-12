@@ -3,28 +3,262 @@
 html, body {
   margin: 0;
   height: 100%;
-  background: #0d1016;
+  background: #040509;
   font-family: -apple-system, "Segoe UI", sans-serif;
   color: #f4f1ea;
   overflow: hidden;
 }
 
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: linear-gradient(180deg, #12161f 0%, #0d1016 100%);
+  border-bottom: 1px solid #1c222c;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  z-index: 1;
+  -webkit-app-region: drag;
+}
+
+#toolbar-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #f4f1ea;
+}
+
+.brand-mark {
+  color: #ffb35a;
+}
+
+.btn {
+  -webkit-app-region: no-drag;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #f4f1ea;
+  background: #262e3a;
+  border: 1px solid #3a4452;
+  border-radius: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: #303a48;
+}
+
+.btn-primary {
+  background: #3a5fc9;
+  border-color: #3a5fc9;
+}
+
+.btn-primary:hover {
+  background: #4a6fda;
+}
+
+#ship-scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+  background: #040509;
+}
+
 #scene {
-  width: 100vw;
-  height: 100vh;
   display: block;
 }
 
+.room {
+  transition: filter 0.15s ease;
+}
+
+.room:hover {
+  filter: brightness(1.04);
+}
+
+.room-header {
+  opacity: 0.9;
+}
+
 .room-label {
-  fill: #b4b2a9;
-  font-size: 14px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  fill: #f4f1ea;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   font-family: -apple-system, "Segoe UI", sans-serif;
+}
+
+.room-path {
+  fill: #aeb4c2;
+  font-size: 10px;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+}
+
+.room-remove {
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.room-remove circle {
+  fill: #262e3a;
+  stroke: #3a4452;
+  stroke-width: 1;
+  transition: fill 0.15s ease, stroke 0.15s ease;
+}
+
+.room-remove text {
+  fill: #9aa1ad;
+  font-size: 12px;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+  text-anchor: middle;
+}
+
+.room-remove:hover {
+  filter: drop-shadow(0 0 4px rgba(176, 74, 74, 0.6));
+}
+
+.room-remove:hover circle {
+  fill: #6b2c2c;
+  stroke: #b04a4a;
+}
+
+.room-remove:hover text {
+  fill: #f4f1ea;
+}
+
+.spawn-btn {
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.spawn-btn rect {
+  fill: #3a5fc9;
+  stroke: #5a7fe0;
+  stroke-width: 1;
+  transition: fill 0.15s ease;
+}
+
+.spawn-btn text {
+  fill: #f4f1ea;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+  text-anchor: middle;
+}
+
+.spawn-btn:hover {
+  filter: drop-shadow(0 0 6px rgba(90, 127, 224, 0.7));
+}
+
+.spawn-btn:hover rect {
+  fill: #4a6fda;
+}
+
+.engine-flame {
+  animation: flicker 1.6s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.engine-flame:nth-child(2) {
+  animation-delay: 0.4s;
+}
+
+.engine-flame:nth-child(3) {
+  animation-delay: 0.8s;
+}
+
+@keyframes flicker {
+  0%, 100% { opacity: 0.75; transform: scaleX(1); }
+  50% { opacity: 1; transform: scaleX(1.12); }
 }
 
 .crew {
   transition: transform 0.7s ease;
+}
+
+.crew-shadow {
+  fill: #000;
+  opacity: 0.35;
+  filter: blur(1px);
+  transition: opacity 0.3s ease;
+}
+
+.sprite-flip {
+  transition: transform 0.15s ease;
+}
+
+.sprite {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+
+.leg {
+  transform-box: fill-box;
+  transform-origin: 50% 0%;
+}
+
+/* Walk cycle: legs scissor opposite each other, body gives a light bob,
+   and the ground shadow shrinks slightly on the bob's up-beat. Only plays
+   while a crew member is actually travelling between spots. */
+.crew.walking .sprite {
+  animation: walk-bob 0.46s ease-in-out infinite;
+}
+
+.crew.walking .leg-l {
+  animation: leg-swing-l 0.46s ease-in-out infinite;
+}
+
+.crew.walking .leg-r {
+  animation: leg-swing-r 0.46s ease-in-out infinite;
+}
+
+.crew.walking .crew-shadow {
+  animation: shadow-pulse 0.46s ease-in-out infinite;
+}
+
+@keyframes walk-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+
+@keyframes leg-swing-l {
+  0%, 100% { transform: rotate(20deg); }
+  50% { transform: rotate(-20deg); }
+}
+
+@keyframes leg-swing-r {
+  0%, 100% { transform: rotate(-20deg); }
+  50% { transform: rotate(20deg); }
+}
+
+@keyframes shadow-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.22; }
+}
+
+.role-bg {
+  opacity: 0.92;
+}
+
+.role-text {
+  fill: #f4f1ea;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+}
+
+.tag-bg {
+  fill: #1c222c;
+  stroke: #3a4452;
+  stroke-width: 1;
 }
 
 .tag-text {
@@ -34,19 +268,24 @@ html, body {
   font-family: -apple-system, "Segoe UI", sans-serif;
 }
 
-.role-text {
-  fill: #b4b2a9;
-  font-size: 9px;
+.task-text {
+  fill: #8890a0;
+  font-size: 8px;
+  font-style: italic;
   font-family: -apple-system, "Segoe UI", sans-serif;
 }
 
 .bubble {
-  transition: transform 0.7s ease, opacity 0.3s ease;
+  transition: transform 0.5s ease, opacity 0.3s ease;
   opacity: 0;
 }
 
 .bubble.show {
   opacity: 1;
+}
+
+.bubble-tail {
+  fill: #f4f1ea;
 }
 
 .bubble-box {
@@ -57,11 +296,12 @@ html, body {
   padding: 6px 9px;
   border-radius: 8px;
   text-align: center;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
 }
 
 #empty-state {
   position: fixed;
-  inset: 0;
+  inset: 56px 0 0 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -79,4 +319,81 @@ html, body {
 
 #empty-state.hidden {
   display: none;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 5, 9, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.modal.hidden {
+  display: none;
+}
+
+.modal-box {
+  width: 320px;
+  background: #171c25;
+  border: 1px solid #2c3440;
+  border-radius: 10px;
+  padding: 18px;
+}
+
+.modal-box h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.modal-subtitle {
+  font-size: 12px;
+  color: #8890a0;
+  margin-bottom: 14px;
+}
+
+.modal-field {
+  display: block;
+  font-size: 12px;
+  color: #b4b2a9;
+  margin-bottom: 12px;
+}
+
+.modal-field input,
+.modal-field textarea {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  background: #0d1016;
+  border: 1px solid #2c3440;
+  border-radius: 6px;
+  color: #f4f1ea;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px;
+  resize: vertical;
+}
+
+.modal-field input:focus,
+.modal-field textarea:focus {
+  outline: none;
+  border-color: #3a5fc9;
+}
+
+.modal-error {
+  font-size: 12px;
+  color: #e0836f;
+  margin-bottom: 10px;
+}
+
+.modal-error.hidden {
+  display: none;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
