@@ -1,38 +1,36 @@
 {
   "name": "agent-ship",
-  "version": "0.1.0",
-  "description": "Live visualization of Claude Code agent activity as a spaceship crew room",
-  "main": "src/main/main.js",
+  "version": "0.2.0",
+  "description": "Live visualization of Claude Code agent activity as a building of project rooms",
+  "main": "./out/main/index.js",
   "scripts": {
-    "start": "electron .",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "install-hooks": "node scripts/install-hooks.js",
     "uninstall-hooks": "node scripts/uninstall-hooks.js",
     "postinstall": "node scripts/install-hooks.js --auto",
-    "dist": "electron-builder --mac --win --linux",
-    "dist:mac": "electron-builder --mac",
-    "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "dist:mac": "electron-vite build && electron-builder --mac",
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:linux": "electron-vite build && electron-builder --linux"
   },
   "author": "",
   "license": "MIT",
-  "dependencies": {
-    "express": "^4.19.2"
-  },
-  "devDependencies": {
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3"
-  },
   "build": {
     "appId": "com.agentship.app",
     "productName": "Agent Ship",
     "files": [
-      "src/**/*",
+      "out/**/*",
       "hooks/**/*",
       "scripts/**/*",
       "package.json"
     ],
     "extraResources": [
-      { "from": "hooks", "to": "hooks" }
+      {
+        "from": "hooks",
+        "to": "hooks"
+      }
     ],
     "afterSign": false,
     "mac": {
@@ -45,7 +43,9 @@
       "icon": "build/icon.png"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "icon": "build/icon.png",
       "category": "Development"
     },
@@ -54,5 +54,21 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": false
     }
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.11.6",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6"
   }
 }
