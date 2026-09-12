@@ -1,34 +1,25 @@
-// Layout constants for the ship. Rooms are laid out left-to-right, one per
-// registered project, inside a hull whose width grows with the project
-// count; the whole scene scrolls horizontally if it doesn't fit the window.
-const ROOM_W = 260;
-const ROOM_GAP = 18;
-const HULL_PAD = 36;
-const NOSE_W = 90;
-const TAIL_W = 130;
-const SPACE_MARGIN = 50;
-const TOP_MARGIN = 96;
-const ROOM_H = 460;
-const BOTTOM_MARGIN = 70;
+// Rooms render as adjoining cells inside one shared "building" (HTML/CSS),
+// one room per registered project, filling the window's width and reflowing
+// as it resizes - no fixed canvas, no scroll unless there are more rooms
+// than fit vertically.
 
-const sceneEl = document.getElementById('scene');
-const spaceLayer = document.getElementById('space-layer');
-const hullLayer = document.getElementById('hull-layer');
-const roomLayer = document.getElementById('room-layer');
-const crewLayer = document.getElementById('crew-layer');
-const bubbleLayer = document.getElementById('bubble-layer');
+const roomsGrid = document.getElementById('rooms-grid');
 const emptyState = document.getElementById('empty-state');
-
-const positions = new Map();
-const bubbleTimers = new Map();
-const wanderTimers = new Map();
-const roomOfKey = new Map(); // key -> current roomId, so wander loops know where to stop
-let roomBounds = new Map(); // roomId -> {xMin, xMax, yMin, yMax}
-
-const BUBBLE_HALF_W = 78;
 
 let projects = []; // registered rooms, persisted: [{id, name, path}]
 let extraRooms = []; // ephemeral rooms for activity outside any registered project
+
+const crewState = new Map(); // crewKey -> { event, roomId } - lets a re-render restore the full roster
+const roomActivity = new Map(); // roomId -> icon kind shown on the room's status dot
+const bubbleTimers = new Map(); // crewKey -> timeout hiding the transient status bubble
+const positions = new Map(); // crewKey -> {x, y} within its room's stage
+const roomOfKey = new Map(); // crewKey -> current roomId, so a wander loop knows where to stop
+const wanderTimers = new Map(); // crewKey -> timeout for the next wander step
+
+const SPRITE_MARGIN_X = 24;
+const SPRITE_MARGIN_TOP = 30; // leaves room for the status bubble above
+const SPRITE_MARGIN_BOTTOM = 30; // leaves room for the name tag below
+const MIN_CREW_SEPARATION = 46;
 
 function allRooms() {
   return [...projects, ...extraRooms];
@@ -36,7 +27,7 @@ function allRooms() {
 
 // A subagent's tool-call hooks share their parent's session_id, so agentId
 // (when present) is what keeps a subagent's crew member distinct from the
-// main session's instead of the two collapsing into one character.
+// main session's instead of the two collapsing into one roster row.
 function crewKey(event) {
   return event.agentId ? `${event.sessionId}::${event.agentId}` : event.sessionId;
 }
@@ -48,7 +39,7 @@ function pathsMatch(cwd, projectPath) {
 }
 
 // Finds the registered room whose project a hook event's cwd belongs to,
-// falling back to an ephemeral room (added to the ship on the fly) for
+// falling back to an ephemeral room (added to the grid on the fly) for
 // activity in a project the user hasn't registered.
 function roomForEvent(event) {
   const cwd = event.projectPath || '';
@@ -65,41 +56,72 @@ function roomForEvent(event) {
   if (!extra) {
     extra = { id: key, name: event.project || 'unknown', path: cwd, ephemeral: true };
     extraRooms.push(extra);
-    renderShip();
+    renderRooms();
   }
   return extra;
 }
 
-const MIN_CREW_SEPARATION = 54;
+function statusText(event) {
+  if (event.status) return event.status;
+  if (event.hookEvent === 'UserPromptSubmit') return 'reading the prompt';
+  if (event.hookEvent === 'Stop') return 'idle';
+  if (event.toolName) return `using ${event.toolName}`;
+  return event.hookEvent || 'working';
+}
+
+// Maps a hook event to one of the icon-set glyphs shown on a room's status
+// dot - the closest read on activity the hook payload actually gives us (no
+// real success/error signal exists upstream, so this reflects tool category
+// rather than outcome).
+function iconKindFor(event) {
+  if (!event) return 'idle';
+  if (event.hookEvent === 'Stop') return 'idle';
+  if (event.hookEvent === 'UserPromptSubmit') return 'talk';
+  const tool = (event.toolName || '').toLowerCase();
+  if (tool === 'edit' || tool === 'write' || tool === 'multiedit' || tool === 'notebookedit') return 'edit';
+  if (tool === 'read' || tool === 'grep' || tool === 'glob') return 'search';
+  if (tool === 'task' || tool === 'agent') return 'merge';
+  return 'working';
+}
+
+// --- rendering --------------------------------------------------------
+
+function stageEl(roomId) {
+  return document.querySelector(`[data-room-stage="${CrewArt.cssEscape(roomId)}"]`);
+}
+
+function stageBounds(roomId) {
+  const el = stageEl(roomId);
+  return { w: (el && el.clientWidth) || 260, h: (el && el.clientHeight) || 118 };
+}
 
 // Distance from a candidate spot to the nearest other crew member already
-// standing in the same room (excluding the crew member we're placing).
+// standing in the same room (excluding the crew member being placed).
 function minDistToOtherCrew(pos, roomId, avoidKey) {
-  const suffix = `:${roomId}`;
   let min = Infinity;
-  for (const [posKey, other] of positions) {
-    if (!posKey.endsWith(suffix)) continue;
-    if (posKey.slice(0, -suffix.length) === avoidKey) continue;
-    const d = Math.hypot(pos.x - other.x, pos.y - other.y);
+  for (const [key, v] of crewState) {
+    if (key === avoidKey || v.roomId !== roomId) continue;
+    const p = positions.get(key);
+    if (!p) continue;
+    const d = Math.hypot(pos.x - p.x, pos.y - p.y);
     if (d < min) min = d;
   }
   return min;
 }
 
 // Plain uniform placement would happily stack two crew members on the exact
-// same spot (and their bubbles on top of each other). A few rejection-
-// sampled attempts, keeping whichever candidate ends up furthest from
-// everyone else, keeps the room looking populated instead of collapsed.
+// same spot. A few rejection-sampled attempts, keeping whichever candidate
+// ends up furthest from everyone else, keeps the stage looking populated.
 function randomPosIn(roomId, avoidKey) {
-  const b = roomBounds.get(roomId);
-  const w = b.xMax - b.xMin - 60;
-  const h = b.yMax - b.yMin - 80;
+  const { w, h } = stageBounds(roomId);
+  const usableW = Math.max(w - SPRITE_MARGIN_X * 2, 10);
+  const usableH = Math.max(h - SPRITE_MARGIN_TOP - SPRITE_MARGIN_BOTTOM, 10);
   let best = null;
   let bestDist = -1;
   for (let i = 0; i < 6; i++) {
     const cand = {
-      x: b.xMin + 30 + Math.random() * w,
-      y: b.yMin + 40 + Math.random() * h
+      x: SPRITE_MARGIN_X + Math.random() * usableW,
+      y: SPRITE_MARGIN_TOP + Math.random() * usableH
     };
     const dist = minDistToOtherCrew(cand, roomId, avoidKey);
     if (dist >= MIN_CREW_SEPARATION) return cand;
@@ -112,202 +134,168 @@ function randomPosIn(roomId, avoidKey) {
 }
 
 function positionFor(key, roomId) {
-  const posKey = `${key}:${roomId}`;
-  if (positions.has(posKey)) return positions.get(posKey);
+  if (positions.has(key)) return positions.get(key);
   const pos = randomPosIn(roomId, key);
-  positions.set(posKey, pos);
+  positions.set(key, pos);
   return pos;
 }
 
-// A speech bubble anchored straight above the crew member can drift outside
-// its room (or, near the top of a room, above the hull into open space).
-// Clamp its box to the room it belongs to and keep a tail pointing at the
-// true crew position even when the box itself had to shift to stay inside.
-function computeBubbleAnchor(pos, roomId) {
-  const b = roomBounds.get(roomId);
-  const xMin = b ? b.xMin + BUBBLE_HALF_W : pos.x - BUBBLE_HALF_W;
-  const xMax = b ? b.xMax - BUBBLE_HALF_W : pos.x + BUBBLE_HALF_W;
-  const bx = Math.min(Math.max(pos.x, xMin), Math.max(xMin, xMax));
-  const minY = (b ? b.yMin : TOP_MARGIN) + 46;
-  const by = Math.max(pos.y - 40, minY);
-  return { bx, by, tailDx: pos.x - bx };
-}
-
-function tailPoints(tailDx) {
-  return `${tailDx - 7},-5 ${tailDx + 7},-5 ${tailDx},9`;
-}
-
-function statusText(event) {
-  if (event.status) return event.status;
-  if (event.hookEvent === 'UserPromptSubmit') return 'reading the prompt';
-  if (event.hookEvent === 'Stop') return 'idle';
-  if (event.toolName) return `using ${event.toolName}`;
-  return event.hookEvent || 'working';
-}
-
-function truncate(str, n) {
-  return str.length > n ? `${str.slice(0, n - 1)}…` : str;
-}
-
-// --- Ship rendering -------------------------------------------------------
-
-function buildRivets(x0, x1, y, spacing) {
-  let out = '';
-  for (let x = x0 + spacing / 2; x < x1; x += spacing) {
-    out += `<circle cx="${x}" cy="${y}" r="1.6" fill="#0d1016" opacity="0.7" />`;
-  }
-  return out;
-}
-
-function renderShip() {
-  positions.clear();
-
-  const rooms = allRooms();
-  const n = rooms.length;
-  const slots = Math.max(n, 1);
-  const contentW = slots * ROOM_W + (slots - 1) * ROOM_GAP;
-  const hullX0 = SPACE_MARGIN + NOSE_W;
-  const hullW = HULL_PAD * 2 + contentW;
-  const hullX1 = hullX0 + hullW;
-  const totalW = hullX1 + TAIL_W + SPACE_MARGIN;
-  const totalH = TOP_MARGIN + ROOM_H + BOTTOM_MARGIN;
-  const hullY0 = TOP_MARGIN - 26;
-  const hullY1 = TOP_MARGIN + ROOM_H + 26;
-  const midY = (hullY0 + hullY1) / 2;
-
-  sceneEl.setAttribute('viewBox', `0 0 ${totalW} ${totalH}`);
-  sceneEl.setAttribute('width', totalW);
-  sceneEl.setAttribute('height', totalH);
-
-  // --- deep space background ---
-  spaceLayer.innerHTML = `
-    <rect width="${totalW}" height="${totalH}" fill="url(#space-glow)" />
-    <rect width="${totalW}" height="${totalH}" fill="url(#stars)" />
-    <circle cx="${totalW - 130}" cy="120" r="46" fill="url(#planet-body)" />
-    <ellipse cx="${totalW - 130}" cy="120" rx="78" ry="14" fill="none" stroke="#a894e0" stroke-width="3" opacity="0.5" transform="rotate(-18 ${totalW - 130} 120)" />
-    <circle cx="120" cy="${totalH - 60}" r="16" fill="#3a4a63" opacity="0.6" />
+function spriteMarkup(key, event, pos) {
+  const badge = CrewArt.badgeFor(event.role);
+  const name = CrewArt.truncate(event.agentName || 'Agent', 14);
+  return `
+    <div class="crew-sprite" id="crew-${CrewArt.cssEscape(key)}" data-session-id="${CrewArt.escapeXml(event.sessionId)}" style="transform: translate(${pos.x}px, ${pos.y}px)">
+      <div class="crew-flip"><div class="crew-bob">${CrewArt.avatarSvg(key, event.role)}</div></div>
+      <div class="crew-tag">
+        <span class="role-chip-mini" style="background:${badge.color}">${badge.code}</span>
+        <span class="crew-name-mini">${CrewArt.escapeXml(name)}</span>
+      </div>
+      <div class="crew-bubble"></div>
+    </div>
   `;
+}
 
-  // --- hull: nose, body, tail ---
-  const noseTipX = SPACE_MARGIN;
-  hullLayer.innerHTML = `
-    <polygon points="${noseTipX},${midY} ${hullX0},${hullY0} ${hullX0},${hullY1}" fill="url(#hull-armor)" stroke="#3a4452" stroke-width="2" stroke-linejoin="round" />
-    <circle cx="${hullX0 - 34}" cy="${midY}" r="16" fill="url(#window-glow)" stroke="#4d5868" stroke-width="2" />
-    <ellipse cx="${hullX0 - 38}" cy="${midY - 5}" rx="5" ry="3" fill="#ffffff" opacity="0.35" />
+function roomCardMarkup(room) {
+  const idAttr = CrewArt.cssEscape(room.id);
+  const label = CrewArt.truncate(room.name, 28);
+  const subtitle = room.ephemeral ? 'not registered' : CrewArt.truncate(room.path, 42);
+  const accent = CrewArt.colorFor(room.id).body;
+  const kind = roomActivity.get(room.id) || 'idle';
 
-    <rect x="${hullX0}" y="${hullY0}" width="${hullW}" height="${hullY1 - hullY0}" fill="url(#hull-panel)" stroke="#3a4452" stroke-width="2" />
-    <rect x="${hullX0}" y="${hullY0}" width="${hullW}" height="3" fill="#3d4757" opacity="0.7" />
-    ${buildRivets(hullX0, hullX1, hullY0 + 6, 26)}
-    ${buildRivets(hullX0, hullX1, hullY1 - 6, 26)}
-
-    <polygon points="${hullX1},${hullY0 + 14} ${hullX1 + TAIL_W},${midY - 34} ${hullX1 + TAIL_W},${midY + 34} ${hullX1},${hullY1 - 14}" fill="url(#hull-armor)" stroke="#3a4452" stroke-width="2" stroke-linejoin="round" />
-    <g class="engine-flame"><ellipse cx="${hullX1 + TAIL_W + 4}" cy="${midY - 20}" rx="16" ry="7" fill="url(#engine-glow)" /></g>
-    <g class="engine-flame"><ellipse cx="${hullX1 + TAIL_W + 4}" cy="${midY}" rx="20" ry="8" fill="url(#engine-glow)" /></g>
-    <g class="engine-flame"><ellipse cx="${hullX1 + TAIL_W + 4}" cy="${midY + 20}" rx="16" ry="7" fill="url(#engine-glow)" /></g>
-  `;
-
-  // --- rooms ---
-  roomBounds = new Map();
-  let roomsHtml = '';
-  rooms.forEach((room, i) => {
-    const x = hullX0 + HULL_PAD + i * (ROOM_W + ROOM_GAP);
-    const y = TOP_MARGIN;
-    roomBounds.set(room.id, { xMin: x, xMax: x + ROOM_W, yMin: y, yMax: y + ROOM_H });
-
-    const idAttr = CrewArt.cssEscape(room.id);
-    const label = truncate(room.name, 22);
-    const subtitle = room.ephemeral ? 'not in shipyard' : truncate(room.path, 30);
-    const accent = CrewArt.colorFor(room.id).body;
-
-    roomsHtml += `
-      <g class="room" data-room-id="${idAttr}">
-        <rect x="${x}" y="${y}" width="${ROOM_W}" height="${ROOM_H}" rx="6" fill="url(#floor-tiles)" stroke="#37414f" stroke-width="1" />
-        <rect x="${x}" y="${y}" width="${ROOM_W}" height="48" fill="#0d1016" opacity="0.42" />
-        <rect x="${x}" y="${y}" width="${ROOM_W}" height="4" rx="2" class="room-header" fill="${accent}" />
-        <circle cx="${x + ROOM_W / 2}" cy="${hullY0}" r="15" fill="url(#window-glow)" stroke="#4d5868" stroke-width="2" />
-        <text class="room-label" x="${x + 14}" y="${y + 26}">${CrewArt.escapeXml(label)}</text>
-        <text class="room-path" x="${x + 14}" y="${y + 42}">${CrewArt.escapeXml(subtitle)}</text>
+  return `
+    <div class="room-card" data-room-id="${idAttr}" style="border-left-color:${accent}">
+      <div class="room-card-header">
+        <div class="room-card-title">
+          <svg class="room-status-dot" data-room-status="${idAttr}" viewBox="-10 -10 20 20" width="18" height="18">${Icons.badge(kind, 20)}</svg>
+          <div class="room-card-heading">
+            <div class="room-name">${CrewArt.escapeXml(label)}</div>
+            <div class="room-path">${CrewArt.escapeXml(subtitle)}</div>
+          </div>
+        </div>
         ${
           room.ephemeral
             ? ''
-            : `<g class="room-remove" data-room-remove="${idAttr}" transform="translate(${x + ROOM_W - 20}, ${y + 18})">
-                 <circle r="10" />
-                 <text y="4">&#215;</text>
-               </g>`
+            : `<button class="icon-btn danger" data-room-remove="${idAttr}" title="Remove project" aria-label="Remove project">
+                 <svg viewBox="-8 -8 16 16" width="14" height="14"><path d="M-4 -4 L4 4 M4 -4 L-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+               </button>`
         }
-        <g class="spawn-btn" data-room-spawn="${idAttr}" transform="translate(${x + ROOM_W / 2 - 42}, ${y + ROOM_H - 34})">
-          <rect width="84" height="24" rx="5" />
-          <text x="42" y="16">+ Spawn</text>
-        </g>
-        ${i > 0 ? `<rect x="${x - ROOM_GAP / 2 - 2}" y="${y - 10}" width="4" height="${ROOM_H + 20}" fill="#111419" />` : ''}
-      </g>
-    `;
-  });
-  roomLayer.innerHTML = roomsHtml;
-
-  emptyState.classList.toggle('hidden', n > 0 || crewLayer.children.length > 0);
+      </div>
+      <div class="room-stage" data-room-stage="${idAttr}">
+        <div class="room-stage-empty">No active agents</div>
+      </div>
+      <button class="spawn-pill" data-room-spawn="${idAttr}">
+        <svg viewBox="-8 -8 16 16" width="13" height="13"><path d="M0 -5 V5 M-5 0 H5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /></svg>
+        Spawn agent
+      </button>
+    </div>
+  `;
 }
 
-// --- crew rendering (mostly unchanged from the original design) ----------
+function renderRooms() {
+  const rooms = allRooms();
+  roomsGrid.innerHTML = rooms.map(roomCardMarkup).join('');
+  emptyState.classList.toggle('hidden', rooms.length > 0);
 
-function ensureCrew(event, key, roomId, pos) {
+  // The grid was fully rebuilt (new project registered/removed) - repopulate
+  // each stage from the roster we already know about and get everyone
+  // wandering again in their freshly-measured stage.
+  for (const [key, v] of crewState) {
+    if (!rooms.some((r) => r.id === v.roomId)) continue;
+    positions.delete(key);
+    const pos = positionFor(key, v.roomId);
+    ensureSprite(v.event, key, v.roomId, pos, false);
+  }
+}
+
+// Swaps a room's status-dot icon in place and gives it a brief pulse so a
+// status change is noticeable even if you weren't looking at that room.
+function updateRoomActivity(roomId, kind) {
+  if (roomActivity.get(roomId) === kind) return;
+  roomActivity.set(roomId, kind);
+  const dot = document.querySelector(`[data-room-status="${CrewArt.cssEscape(roomId)}"]`);
+  if (!dot) return;
+  dot.innerHTML = Icons.badge(kind, 20);
+  dot.classList.remove('pulse');
+  void dot.offsetWidth; // restart the animation
+  dot.classList.add('pulse');
+}
+
+function ensureSprite(event, key, roomId, pos, roomChanged) {
   const id = `crew-${CrewArt.cssEscape(key)}`;
   let el = document.getElementById(id);
+
   if (!el) {
-    crewLayer.insertAdjacentHTML('beforeend', CrewArt.svgFor(event, key, pos.x, pos.y));
+    const stage = stageEl(roomId);
+    if (!stage) return null;
+    const hint = stage.querySelector('.room-stage-empty');
+    if (hint) hint.remove();
+    stage.insertAdjacentHTML('beforeend', spriteMarkup(key, event, pos));
     el = document.getElementById(id);
     roomOfKey.set(key, roomId);
     startWandering(key, roomId);
-  } else {
-    el.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
-    const tag = el.querySelector('.tag-text');
-    const role = el.querySelector('.role-text');
-    if (tag) tag.textContent = truncate(event.agentName || 'Agent', 14);
-    if (role) role.textContent = truncate(event.role || 'Agent', 16);
-    if (roomOfKey.get(key) !== roomId) {
-      roomOfKey.set(key, roomId);
-      startWandering(key, roomId); // room changed under it - wander the new room instead
+    return el;
+  }
+
+  const badge = CrewArt.badgeFor(event.role);
+  const name = CrewArt.truncate(event.agentName || 'Agent', 14);
+  const nameEl = el.querySelector('.crew-name-mini');
+  const chipEl = el.querySelector('.role-chip-mini');
+  if (nameEl) nameEl.textContent = name;
+  if (chipEl) {
+    chipEl.textContent = badge.code;
+    chipEl.style.background = badge.color;
+  }
+
+  if (roomChanged) {
+    const stage = stageEl(roomId);
+    if (stage) {
+      const hint = stage.querySelector('.room-stage-empty');
+      if (hint) hint.remove();
+      el.style.transitionDuration = '0s';
+      el.style.transform = `translate(${pos.x}px, ${pos.y}px)`;
+      stage.appendChild(el);
+      void el.offsetWidth;
+      el.style.transitionDuration = '';
     }
+    roomOfKey.set(key, roomId);
+    startWandering(key, roomId);
   }
   return el;
 }
 
-// Crew wander their room on a loop so the ship feels alive between status
-// updates, not just when an event happens to reposition them. Walking speed
-// is roughly constant (duration scales with distance) and the sprite faces
+// Crew wander their room's stage on a loop so it feels like a live world
+// between status updates, not just a static roster. Walking speed is
+// roughly constant (duration scales with distance) and the sprite faces
 // the direction it's moving.
 function startWandering(key, roomId) {
   stopWandering(key);
 
   const tick = () => {
     const el = document.getElementById(`crew-${CrewArt.cssEscape(key)}`);
-    if (!el || !roomBounds.has(roomId) || roomOfKey.get(key) !== roomId) {
+    if (!el || roomOfKey.get(key) !== roomId || !stageEl(roomId)) {
       wanderTimers.delete(key);
       return;
     }
 
-    const posKey = `${key}:${roomId}`;
-    const oldPos = positions.get(posKey) || randomPosIn(roomId, key);
+    const oldPos = positions.get(key) || randomPosIn(roomId, key);
     const newPos = randomPosIn(roomId, key);
-    positions.set(posKey, newPos);
+    positions.set(key, newPos);
 
     const dist = Math.hypot(newPos.x - oldPos.x, newPos.y - oldPos.y);
-    const duration = Math.min(2200, Math.max(500, dist * 7));
+    const duration = Math.min(2000, Math.max(450, dist * 6));
 
     el.style.transitionDuration = `${duration}ms`;
     el.style.transform = `translate(${newPos.x}px, ${newPos.y}px)`;
-    const flip = el.querySelector('.sprite-flip');
+    const flip = el.querySelector('.crew-flip');
     if (flip) flip.style.transform = newPos.x < oldPos.x ? 'scaleX(-1)' : '';
     el.classList.add('walking');
     clearTimeout(el._walkStopTimer);
     el._walkStopTimer = setTimeout(() => el.classList.remove('walking'), duration);
 
-    moveBubbleIfShown(key, newPos, roomId);
-
-    wanderTimers.set(key, setTimeout(tick, duration + 1600 + Math.random() * 3400));
+    wanderTimers.set(key, setTimeout(tick, duration + 1000 + Math.random() * 2200));
   };
 
-  wanderTimers.set(key, setTimeout(tick, 1200 + Math.random() * 3000));
+  wanderTimers.set(key, setTimeout(tick, 600 + Math.random() * 1800));
 }
 
 function stopWandering(key) {
@@ -315,81 +303,52 @@ function stopWandering(key) {
   wanderTimers.delete(key);
 }
 
-function ensureBubble(event, key, pos, text, roomId) {
-  const id = `bubble-${CrewArt.cssEscape(key)}`;
-  let el = document.getElementById(id);
-  const { bx, by, tailDx } = computeBubbleAnchor(pos, roomId);
-
-  if (!el) {
-    bubbleLayer.insertAdjacentHTML(
-      'beforeend',
-      `<g class="bubble" id="${id}" data-session-id="${CrewArt.escapeXml(event.sessionId)}" style="transform: translate(${bx}px, ${by}px)">
-        <foreignObject x="-${BUBBLE_HALF_W}" y="-56" width="${BUBBLE_HALF_W * 2}" height="52">
-          <div xmlns="http://www.w3.org/1999/xhtml" class="bubble-box">${CrewArt.escapeXml(text)}</div>
-        </foreignObject>
-        <polygon class="bubble-tail" points="${tailPoints(tailDx)}" />
-      </g>`
-    );
-    el = document.getElementById(id);
-  } else {
-    el.style.transform = `translate(${bx}px, ${by}px)`;
-    const box = el.querySelector('.bubble-box');
-    if (box) box.textContent = text;
-    const tail = el.querySelector('.bubble-tail');
-    if (tail) tail.setAttribute('points', tailPoints(tailDx));
-  }
-  return el;
+function showStatusBubble(el, key, text) {
+  const bubble = el.querySelector('.crew-bubble');
+  if (!bubble) return;
+  bubble.textContent = text;
+  bubble.classList.add('show');
+  clearTimeout(bubbleTimers.get(key));
+  bubbleTimers.set(key, setTimeout(() => bubble.classList.remove('show'), 5000));
 }
 
-// Keeps a currently-visible speech bubble glued above its crew member while
-// that crew member wanders, instead of leaving the bubble stranded behind.
-function moveBubbleIfShown(key, pos, roomId) {
-  const bubbleEl = document.getElementById(`bubble-${CrewArt.cssEscape(key)}`);
-  if (!bubbleEl || !bubbleEl.classList.contains('show')) return;
-  const { bx, by, tailDx } = computeBubbleAnchor(pos, roomId);
-  bubbleEl.style.transform = `translate(${bx}px, ${by}px)`;
-  const tail = bubbleEl.querySelector('.bubble-tail');
-  if (tail) tail.setAttribute('points', tailPoints(tailDx));
-}
-
-function removeCrew(key) {
-  const crewEl = document.getElementById(`crew-${CrewArt.cssEscape(key)}`);
-  const bubbleEl = document.getElementById(`bubble-${CrewArt.cssEscape(key)}`);
-  if (crewEl) crewEl.remove();
-  if (bubbleEl) bubbleEl.remove();
+function removeSprite(key) {
+  const el = document.getElementById(`crew-${CrewArt.cssEscape(key)}`);
+  const stage = el ? el.closest('.room-stage') : null;
+  if (el) el.remove();
+  crewState.delete(key);
+  positions.delete(key);
+  roomOfKey.delete(key);
+  stopWandering(key);
   clearTimeout(bubbleTimers.get(key));
   bubbleTimers.delete(key);
-  stopWandering(key);
-  roomOfKey.delete(key);
-  emptyState.classList.toggle('hidden', allRooms().length > 0 || crewLayer.children.length > 0);
+  if (stage && !stage.querySelector('.crew-sprite')) {
+    stage.innerHTML = '<div class="room-stage-empty">No active agents</div>';
+  }
 }
 
 function handleEvent(event) {
   if (event.hookEvent === 'SessionEnd') {
-    document.querySelectorAll(`[data-session-id="${CSS.escape(event.sessionId)}"]`).forEach((el) => el.remove());
-    emptyState.classList.toggle('hidden', allRooms().length > 0 || crewLayer.children.length > 0);
+    for (const [key, v] of [...crewState]) {
+      if (v.event.sessionId === event.sessionId) removeSprite(key);
+    }
     return;
   }
 
   if (event.subagentDoneId) {
-    removeCrew(`${event.sessionId}::${event.subagentDoneId}`);
+    removeSprite(`${event.sessionId}::${event.subagentDoneId}`);
   }
 
   const room = roomForEvent(event);
   const key = crewKey(event);
+  crewState.set(key, { event, roomId: room.id });
+  updateRoomActivity(room.id, iconKindFor(event));
+
+  const roomChanged = roomOfKey.get(key) !== room.id;
+  if (roomChanged) positions.delete(key);
   const pos = positionFor(key, room.id);
-
-  ensureCrew(event, key, room.id, pos);
-  const bubbleEl = ensureBubble(event, key, pos, statusText(event), room.id);
-  bubbleEl.classList.add('show');
-
-  clearTimeout(bubbleTimers.get(key));
-  bubbleTimers.set(
-    key,
-    setTimeout(() => bubbleEl.classList.remove('show'), 6000)
-  );
-
-  emptyState.classList.add('hidden');
+  const el = ensureSprite(event, key, room.id, pos, roomChanged);
+  if (el) showStatusBubble(el, key, statusText(event));
 }
 
 window.agentShip.onAgentEvent(handleEvent);
@@ -399,12 +358,12 @@ window.agentShip.onAgentEvent(handleEvent);
 // Registering a project that already had an ephemeral "not in shipyard"
 // room (from activity seen before it was added) would otherwise leave two
 // rooms for the same folder side by side - drop the ephemeral one now that
-// a real one covers its path. Any crew still tagged to the old room self-
-// corrects to the new one on its next event (position is recomputed then).
+// a real one covers its path. Crew rows tagged to the old room id simply
+// re-tag themselves to the new one on their next event.
 function applyProjects(list) {
   projects = list;
   extraRooms = extraRooms.filter((r) => !r.path || !projects.some((p) => pathsMatch(r.path, p.path)));
-  renderShip();
+  renderRooms();
 }
 
 async function refreshProjects() {
@@ -415,12 +374,12 @@ document.getElementById('add-project-btn').addEventListener('click', async () =>
   applyProjects(await window.agentShip.addProject());
 });
 
-roomLayer.addEventListener('click', async (e) => {
+roomsGrid.addEventListener('click', async (e) => {
   const removeBtn = e.target.closest('[data-room-remove]');
   if (removeBtn) {
     const id = removeBtn.getAttribute('data-room-remove');
     const room = projects.find((p) => CrewArt.cssEscape(p.id) === id);
-    if (room && confirm(`Remove "${room.name}" from the ship? Agents already running there keep running.`)) {
+    if (room && confirm(`Remove "${room.name}" from the building? Agents already running there keep running.`)) {
       applyProjects(await window.agentShip.removeProject(room.id));
     }
     return;

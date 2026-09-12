@@ -1,14 +1,27 @@
+// Crew identity: a per-agent color, a role-derived hat/badge, and a small
+// avatar icon used in the room roster list. Claude-inspired palette - warm,
+// muted hues rather than saturated sci-fi colors.
 const CrewArt = (() => {
   const COLORS = [
-    { body: '#7f77dd', dark: '#534ab7' },
-    { body: '#d85a30', dark: '#993c1d' },
-    { body: '#1d9e75', dark: '#0f6e56' },
-    { body: '#378add', dark: '#185fa5' },
-    { body: '#d4537e', dark: '#993556' },
-    { body: '#ba7517', dark: '#854f0b' }
+    { body: '#C15F3C', dark: '#8B4028' }, // terracotta
+    { body: '#6B8F71', dark: '#47614C' }, // sage
+    { body: '#5B7C99', dark: '#3E5871' }, // slate
+    { body: '#8B6BA8', dark: '#5F4977' }, // plum
+    { body: '#B08B5C', dark: '#7A5E3B' }, // sand
+    { body: '#B5697A', dark: '#7D4553' } // rose
   ];
 
-  const EYE = '#f4f1ea';
+  const EYE = '#ffffff';
+
+  // Short role codes + a fixed accent per role family, independent of the
+  // crewmate's own color - reads as a badge/lanyard rather than a uniform.
+  const ROLE_BADGES = {
+    antenna: { code: 'DEV', color: '#6B5B95' },
+    visor: { code: 'BE', color: '#5B7C99' },
+    beret: { code: 'FE', color: '#47614C' },
+    cap: { code: 'OPS', color: '#7D4553' },
+    headset: { code: 'QA', color: '#8B6134' }
+  };
 
   function hashStr(str) {
     let h = 0;
@@ -27,6 +40,10 @@ const CrewArt = (() => {
     if (r.includes('design') || r.includes('frontend') || r.includes('ui')) return 'beret';
     if (r.includes('backend') || r.includes('api') || r.includes('server')) return 'visor';
     return 'antenna';
+  }
+
+  function badgeFor(role) {
+    return ROLE_BADGES[hatFor(role)];
   }
 
   // Blocky, pixel-grid accessories - rectangles only, to match the body style.
@@ -58,63 +75,37 @@ const CrewArt = (() => {
     }
   }
 
-  // Body block modeled on Claude's pixel mark: solid rect, two cutout eyes,
-  // side arm tabs. Legs are split into their own groups (each with a
-  // fill-box transform-origin pinned at the hip) so CSS can swing them like
-  // a walk cycle without touching the rest of the sprite.
+  // Body block modeled on Claude's own pixel mark: solid rect, two cutout
+  // eyes, a side arm tab, and two foot tabs.
   function bodyMarkup(color) {
     return `
       <rect x="-12" y="-4" width="24" height="20" fill="${color.body}" />
       <rect x="-16" y="6" width="32" height="6" fill="${color.body}" />
-      <g class="leg leg-l"><rect x="-8" y="16" width="4" height="8" fill="${color.body}" /></g>
-      <g class="leg leg-r"><rect x="4" y="16" width="4" height="8" fill="${color.body}" /></g>
+      <rect x="-8" y="16" width="4" height="8" fill="${color.body}" />
+      <rect x="4" y="16" width="4" height="8" fill="${color.body}" />
       <rect x="-9" y="0" width="4" height="8" fill="${EYE}" />
       <rect x="5" y="0" width="4" height="8" fill="${EYE}" />
     `;
+  }
+
+  // A small self-contained <svg> for the crew roster row.
+  function avatarSvg(key, role) {
+    const color = colorFor(key);
+    const hat = hatFor(role);
+    return `<svg class="crew-avatar" viewBox="-20 -22 40 50" width="40" height="46">${bodyMarkup(color)}${accessoryMarkup(hat, color.dark)}</svg>`;
   }
 
   function truncate(str, n) {
     return str.length > n ? `${str.slice(0, n - 1)}…` : str;
   }
 
-  // Nameplate is a two-row badge: role on top (small colored pill so it
-  // reads as a job title), agent name below in the larger bar. Both rows
-  // get their own background so they stay legible over the floor tiles.
-  function svgFor(event, key, x, y) {
-    const color = colorFor(key);
-    const hat = hatFor(event.role);
-    const role = truncate(event.role || 'Agent', 16);
-    const name = truncate(event.agentName || 'Agent', 14);
-    const task = event.task
-      ? `<text class="task-text" x="0" y="82" text-anchor="middle">${escapeXml(truncate(event.task, 26))}</text>`
-      : '';
-    return `
-      <g class="crew" id="crew-${cssEscape(key)}" data-session-id="${escapeXml(event.sessionId)}" style="transform: translate(${x}px, ${y}px)">
-        <ellipse class="crew-shadow" cx="0" cy="27" rx="15" ry="4" />
-        <g class="sprite-flip">
-          <g class="sprite">
-            ${bodyMarkup(color)}
-            ${accessoryMarkup(hat, color.dark)}
-          </g>
-        </g>
-        <g class="tag" transform="translate(0, 33)">
-          <rect class="role-bg" x="-32" y="0" width="64" height="13" rx="6" fill="${color.dark}" />
-          <text class="role-text" x="0" y="9" text-anchor="middle">${escapeXml(role)}</text>
-          <rect class="tag-bg" x="-36" y="15" width="72" height="16" rx="4" />
-          <text class="tag-text" x="0" y="27" text-anchor="middle">${escapeXml(name)}</text>
-        </g>
-        ${task}
-      </g>
-    `;
+  function escapeXml(str) {
+    return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   }
 
   function cssEscape(str) {
     return String(str).replace(/[^a-zA-Z0-9_-]/g, '_');
   }
 
-  function escapeXml(str) {
-    return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  }
-
-  return { colorFor, hatFor, svgFor, cssEscape, escapeXml };
+  return { colorFor, hatFor, badgeFor, avatarSvg, truncate, escapeXml, cssEscape };
 })();

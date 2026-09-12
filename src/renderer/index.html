@@ -8,70 +8,31 @@
 <body>
 
 <div id="toolbar">
-  <div id="toolbar-title"><span class="brand-mark">&#9733;</span> Agent Ship</div>
-  <button id="add-project-btn" class="btn btn-primary">+ Add project</button>
+  <div id="toolbar-title">
+    <span class="brand-mark">
+      <svg viewBox="0 0 20 20" width="14" height="14">
+        <path d="M10 1 L12 8 L19 10 L12 12 L10 19 L8 12 L1 10 L8 8 Z" fill="#ffffff" />
+      </svg>
+    </span>
+    Agent Ship
+  </div>
+  <button id="add-project-btn" class="btn btn-primary">
+    <svg class="btn-icon" viewBox="-10 -10 20 20" width="12" height="12">
+      <path d="M0 -7 V7 M-7 0 H7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+    </svg>
+    Add project
+  </button>
 </div>
 
-<div id="ship-scroll">
-  <svg id="scene" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <radialGradient id="space-glow" cx="30%" cy="20%" r="80%">
-        <stop offset="0%" stop-color="#1a2340" />
-        <stop offset="55%" stop-color="#0a0e1c" />
-        <stop offset="100%" stop-color="#040509" />
-      </radialGradient>
-      <pattern id="stars" width="220" height="220" patternUnits="userSpaceOnUse">
-        <circle cx="14" cy="22" r="1.4" fill="#ffffff" opacity="0.85" />
-        <circle cx="52" cy="70" r="0.9" fill="#bcd2ff" opacity="0.6" />
-        <circle cx="96" cy="18" r="1.1" fill="#ffffff" opacity="0.5" />
-        <circle cx="130" cy="55" r="1.6" fill="#ffffff" opacity="0.9" />
-        <circle cx="168" cy="30" r="0.8" fill="#bcd2ff" opacity="0.55" />
-        <circle cx="190" cy="90" r="1.2" fill="#ffffff" opacity="0.7" />
-        <circle cx="30" cy="120" r="1" fill="#ffffff" opacity="0.5" />
-        <circle cx="70" cy="150" r="1.5" fill="#bcd2ff" opacity="0.8" />
-        <circle cx="110" cy="110" r="0.7" fill="#ffffff" opacity="0.4" />
-        <circle cx="150" cy="140" r="1.1" fill="#ffffff" opacity="0.6" />
-        <circle cx="200" cy="170" r="1.3" fill="#ffffff" opacity="0.75" />
-        <circle cx="40" cy="195" r="0.9" fill="#ffffff" opacity="0.5" />
-        <circle cx="180" cy="200" r="1.6" fill="#bcd2ff" opacity="0.85" />
-      </pattern>
-      <radialGradient id="planet-body" cx="35%" cy="30%" r="70%">
-        <stop offset="0%" stop-color="#6b5aa8" />
-        <stop offset="100%" stop-color="#2a2050" />
-      </radialGradient>
-      <radialGradient id="window-glow" cx="50%" cy="50%" r="50%">
-        <stop offset="0%" stop-color="#5a6d94" />
-        <stop offset="100%" stop-color="#1c222c" />
-      </radialGradient>
-      <radialGradient id="engine-glow" cx="50%" cy="50%" r="50%">
-        <stop offset="0%" stop-color="#ffd9a0" />
-        <stop offset="55%" stop-color="#ff8a3d" />
-        <stop offset="100%" stop-color="#ff8a3d00" />
-      </radialGradient>
-      <pattern id="floor-tiles" width="40" height="40" patternUnits="userSpaceOnUse">
-        <rect width="40" height="40" fill="#2c3440" />
-        <rect width="40" height="40" fill="none" stroke="#37414f" stroke-width="1" />
-      </pattern>
-      <linearGradient id="hull-panel" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="#252d3a" />
-        <stop offset="100%" stop-color="#161b24" />
-      </linearGradient>
-      <linearGradient id="hull-armor" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#2c3543" />
-        <stop offset="100%" stop-color="#1a212b" />
-      </linearGradient>
-    </defs>
-
-    <g id="space-layer"></g>
-    <g id="hull-layer"></g>
-    <g id="room-layer"></g>
-    <g id="crew-layer"></g>
-    <g id="bubble-layer"></g>
-  </svg>
+<div id="rooms-scroll">
+  <div id="building">
+    <div id="building-roof"></div>
+    <div id="rooms-grid"></div>
+  </div>
 </div>
 
 <div id="empty-state">
-  No projects in the ship yet.<br/>
+  No rooms in the building yet.<br/>
   <span>Click <strong>+ Add project</strong> to register one, or run <code>claude</code> inside a registered folder.</span>
 </div>
 
@@ -95,6 +56,7 @@
   </div>
 </div>
 
+<script src="icons.js"></script>
 <script src="characters.js"></script>
 <script src="room.js"></script>
 </body>
