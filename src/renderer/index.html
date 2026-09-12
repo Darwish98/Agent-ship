@@ -6,63 +6,95 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-<svg id="scene" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet">
-  <defs>
-    <pattern id="floor-tiles" width="40" height="40" patternUnits="userSpaceOnUse">
-      <rect width="40" height="40" fill="#2c3440" />
-      <rect width="40" height="40" fill="none" stroke="#37414f" stroke-width="1" />
-    </pattern>
-    <radialGradient id="window-glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#3a4a63" />
-      <stop offset="100%" stop-color="#1c222c" />
-    </radialGradient>
-  </defs>
 
-  <rect width="1000" height="700" fill="#0d1016" />
+<div id="toolbar">
+  <div id="toolbar-title"><span class="brand-mark">&#9733;</span> Agent Ship</div>
+  <button id="add-project-btn" class="btn btn-primary">+ Add project</button>
+</div>
 
-  <rect x="20" y="20" width="960" height="660" rx="18" fill="#1c222c" />
-  <rect x="34" y="34" width="932" height="632" rx="12" fill="url(#floor-tiles)" />
+<div id="ship-scroll">
+  <svg id="scene" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="space-glow" cx="30%" cy="20%" r="80%">
+        <stop offset="0%" stop-color="#1a2340" />
+        <stop offset="55%" stop-color="#0a0e1c" />
+        <stop offset="100%" stop-color="#040509" />
+      </radialGradient>
+      <pattern id="stars" width="220" height="220" patternUnits="userSpaceOnUse">
+        <circle cx="14" cy="22" r="1.4" fill="#ffffff" opacity="0.85" />
+        <circle cx="52" cy="70" r="0.9" fill="#bcd2ff" opacity="0.6" />
+        <circle cx="96" cy="18" r="1.1" fill="#ffffff" opacity="0.5" />
+        <circle cx="130" cy="55" r="1.6" fill="#ffffff" opacity="0.9" />
+        <circle cx="168" cy="30" r="0.8" fill="#bcd2ff" opacity="0.55" />
+        <circle cx="190" cy="90" r="1.2" fill="#ffffff" opacity="0.7" />
+        <circle cx="30" cy="120" r="1" fill="#ffffff" opacity="0.5" />
+        <circle cx="70" cy="150" r="1.5" fill="#bcd2ff" opacity="0.8" />
+        <circle cx="110" cy="110" r="0.7" fill="#ffffff" opacity="0.4" />
+        <circle cx="150" cy="140" r="1.1" fill="#ffffff" opacity="0.6" />
+        <circle cx="200" cy="170" r="1.3" fill="#ffffff" opacity="0.75" />
+        <circle cx="40" cy="195" r="0.9" fill="#ffffff" opacity="0.5" />
+        <circle cx="180" cy="200" r="1.6" fill="#bcd2ff" opacity="0.85" />
+      </pattern>
+      <radialGradient id="planet-body" cx="35%" cy="30%" r="70%">
+        <stop offset="0%" stop-color="#6b5aa8" />
+        <stop offset="100%" stop-color="#2a2050" />
+      </radialGradient>
+      <radialGradient id="window-glow" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#5a6d94" />
+        <stop offset="100%" stop-color="#1c222c" />
+      </radialGradient>
+      <radialGradient id="engine-glow" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#ffd9a0" />
+        <stop offset="55%" stop-color="#ff8a3d" />
+        <stop offset="100%" stop-color="#ff8a3d00" />
+      </radialGradient>
+      <pattern id="floor-tiles" width="40" height="40" patternUnits="userSpaceOnUse">
+        <rect width="40" height="40" fill="#2c3440" />
+        <rect width="40" height="40" fill="none" stroke="#37414f" stroke-width="1" />
+      </pattern>
+      <linearGradient id="hull-panel" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#252d3a" />
+        <stop offset="100%" stop-color="#161b24" />
+      </linearGradient>
+      <linearGradient id="hull-armor" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#2c3543" />
+        <stop offset="100%" stop-color="#1a212b" />
+      </linearGradient>
+    </defs>
 
-  <line x1="353" y1="34" x2="353" y2="666" stroke="#111419" stroke-width="4" />
-  <line x1="666" y1="34" x2="666" y2="666" stroke="#111419" stroke-width="4" />
-
-  <g>
-    <text x="60" y="66" class="room-label">Engine room</text>
-    <circle cx="290" cy="90" r="26" fill="url(#window-glow)" stroke="#4d5868" stroke-width="2" />
-    <rect x="60" y="520" width="120" height="70" rx="6" fill="#3a4452" stroke="#4d5868" stroke-width="1.5" />
-    <rect x="72" y="532" width="96" height="28" rx="3" fill="#7f77dd" opacity="0.35" />
-    <circle cx="82" cy="576" r="5" fill="#5dcaa5" />
-    <circle cx="98" cy="576" r="5" fill="#f0997b" />
-    <circle cx="114" cy="576" r="5" fill="#f4f1ea" opacity="0.4" />
-  </g>
-
-  <g>
-    <text x="373" y="66" class="room-label">Lab</text>
-    <circle cx="603" cy="90" r="26" fill="url(#window-glow)" stroke="#4d5868" stroke-width="2" />
-    <rect x="440" y="520" width="140" height="70" rx="6" fill="#3a4452" stroke="#4d5868" stroke-width="1.5" />
-    <rect x="452" y="532" width="116" height="18" rx="3" fill="#d85a30" opacity="0.35" />
-    <rect x="452" y="554" width="55" height="24" rx="3" fill="#4d5868" />
-    <rect x="513" y="554" width="55" height="24" rx="3" fill="#4d5868" />
-  </g>
-
-  <g>
-    <text x="686" y="66" class="room-label">Bridge</text>
-    <circle cx="916" cy="90" r="26" fill="url(#window-glow)" stroke="#4d5868" stroke-width="2" />
-    <rect x="760" y="510" width="180" height="80" rx="8" fill="#3a4452" stroke="#4d5868" stroke-width="1.5" />
-    <rect x="774" y="522" width="152" height="34" rx="3" fill="#1d9e75" opacity="0.3" />
-    <circle cx="790" cy="572" r="5" fill="#5dcaa5" />
-    <circle cx="806" cy="572" r="5" fill="#378add" />
-    <circle cx="822" cy="572" r="5" fill="#f4f1ea" opacity="0.4" />
-  </g>
-
-  <g id="bubble-layer"></g>
-  <g id="crew-layer"></g>
-</svg>
+    <g id="space-layer"></g>
+    <g id="hull-layer"></g>
+    <g id="room-layer"></g>
+    <g id="crew-layer"></g>
+    <g id="bubble-layer"></g>
+  </svg>
+</div>
 
 <div id="empty-state">
-  Waiting for Claude Code activity&hellip;<br/>
-  <span>Run <code>claude</code> in a project with the hook installed.</span>
+  No projects in the ship yet.<br/>
+  <span>Click <strong>+ Add project</strong> to register one, or run <code>claude</code> inside a registered folder.</span>
 </div>
+
+<div id="spawn-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>Spawn an agent</h3>
+    <div id="spawn-project-name" class="modal-subtitle"></div>
+    <label class="modal-field">
+      Role
+      <input id="spawn-role" type="text" placeholder="e.g. QA Engineer" maxlength="40" />
+    </label>
+    <label class="modal-field">
+      Task
+      <textarea id="spawn-task" rows="4" placeholder="What should they work on?"></textarea>
+    </label>
+    <div id="spawn-error" class="modal-error hidden"></div>
+    <div class="modal-actions">
+      <button id="spawn-cancel" class="btn">Cancel</button>
+      <button id="spawn-submit" class="btn btn-primary">Spawn</button>
+    </div>
+  </div>
+</div>
+
 <script src="characters.js"></script>
 <script src="room.js"></script>
 </body>
