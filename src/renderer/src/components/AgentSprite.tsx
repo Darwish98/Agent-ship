@@ -79,10 +79,16 @@ export function AgentSprite({
       style={{ opacity: dimmed ? 0.45 : 1 }}
       aria-hidden="true"
     >
+      {/* Legs live in their own groups, pinned at the hip, so the walk cycle
+          can scissor them without touching the rest of the sprite. */}
+      <g className="leg leg-l">
+        <rect x={-8} y={16} width={4} height={8} fill={color.body} />
+      </g>
+      <g className="leg leg-r">
+        <rect x={4} y={16} width={4} height={8} fill={color.body} />
+      </g>
       <rect x={-12} y={-4} width={24} height={20} fill={color.body} />
       <rect x={-16} y={6} width={32} height={6} fill={color.body} />
-      <rect x={-8} y={16} width={4} height={8} fill={color.body} />
-      <rect x={4} y={16} width={4} height={8} fill={color.body} />
       <rect x={-9} y={0} width={4} height={8} fill="#ffffff" />
       <rect x={5} y={0} width={4} height={8} fill="#ffffff" />
       <Accessory kind={hat} color={color} />

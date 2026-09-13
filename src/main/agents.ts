@@ -1,11 +1,89 @@
 // Launches real Claude Code background agents (`claude --bg`) - the same
 // first-class session mechanism the Claude Code CLI uses, so anything spawned
 // here also shows up in `claude agents` / /resume, not just in this app.
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const run = promisify(execFile)
 
 export interface SpawnResult {
   ok: boolean
   error?: string
+}
+
+export interface RunningAgent {
+  pid: number
+  cwd: string
+  /** "interactive" for a session you're driving, background for `--bg` ones. */
+  kind: string
+  sessionId: string
+  name: string
+  startedAt: number
+}
+
+/**
+ * Sessions Claude Code reports as actually alive right now. Hook events only
+ * fire on tool use, so a session sitting idle mid-conversation looks dead to
+ * them - this is the authoritative liveness signal.
+ */
+export async function listRunningAgents(): Promise<RunningAgent[]> {
+  try {
+    const { stdout } = await run('claude', ['agents', '--json'], {
+      windowsHide: true,
+      timeout: 15_000,
+      maxBuffer: 4 * 1024 * 1024
+    })
+    const parsed: unknown = JSON.parse(stdout)
+    return Array.isArray(parsed) ? (parsed as RunningAgent[]) : []
+  } catch {
+    // Claude Code missing, slow, or a version without --json: just report
+    // nothing running rather than breaking the whole view.
+    return []
+  }
+}
+
+/** Opens Claude Code on exactly this session, in its own working directory. */
+export function openSession(sessionId: string, cwd: string): SpawnResult {
+  if (!sessionId) return { ok: false, error: 'No session id.' }
+  try {
+    if (process.platform === 'win32') {
+      // `start` is a cmd builtin, and the extra "" is start's title argument -
+      // without it the first quoted token is swallowed as the window title.
+      spawn('cmd.exe', ['/c', 'start', '', 'cmd', '/k', 'claude', '--resume', sessionId], {
+        cwd,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false
+      }).unref()
+    } else if (process.platform === 'darwin') {
+      const script = `tell application "Terminal" to do script "cd ${JSON.stringify(cwd)} && claude --resume ${sessionId}"`
+      spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref()
+    } else {
+      spawn('x-terminal-emulator', ['-e', `claude --resume ${sessionId}`], {
+        cwd,
+        detached: true,
+        stdio: 'ignore'
+      }).unref()
+    }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: String((err as Error).message ?? err) }
+  }
+}
+
+/** Stops a running session by killing its process tree. */
+export async function stopAgent(pid: number): Promise<SpawnResult> {
+  if (!pid) return { ok: false, error: 'No process id.' }
+  try {
+    if (process.platform === 'win32') {
+      await run('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true })
+    } else {
+      process.kill(pid, 'SIGTERM')
+    }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: String((err as Error).message ?? err) }
+  }
 }
 
 // No shell: claude is a real binary, and passing argv directly (rather than

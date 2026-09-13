@@ -1,6 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import path from 'node:path'
-import { spawnAgent, spawnMergeOrchestrator, spawnOrchestrator, resumeSession } from './agents'
+import {
+  listRunningAgents,
+  openSession,
+  resumeSession,
+  spawnAgent,
+  spawnMergeOrchestrator,
+  spawnOrchestrator,
+  stopAgent
+} from './agents'
 import { gitState, unmergedBranches } from './git'
 import { installHooks } from './hooks'
 import { startServer, type AgentEvent } from './server'
@@ -102,7 +110,18 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle('sessions:list', () => listSessions())
+  ipcMain.handle('sessions:running', () => listRunningAgents())
   ipcMain.handle('usage:weekly', () => weeklyUsage())
+
+  ipcMain.handle('sessions:hidden', () => shipyard.loadHidden(userDataDir()))
+  ipcMain.handle('sessions:setHidden', (_evt, ids: string[]) =>
+    shipyard.setHidden(userDataDir(), ids)
+  )
+
+  ipcMain.handle('agent:open', (_evt, a: { sessionId: string; cwd: string }) =>
+    openSession(a.sessionId, a.cwd)
+  )
+  ipcMain.handle('agent:stop', (_evt, pid: number) => stopAgent(pid))
 
   ipcMain.handle('git:state', (_evt, cwd: string) => gitState(cwd))
   ipcMain.handle('git:unmergedBranches', (_evt, cwd: string) => unmergedBranches(cwd))

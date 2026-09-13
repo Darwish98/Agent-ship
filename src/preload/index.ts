@@ -35,6 +35,15 @@ export interface UsageWindow {
   since: number
 }
 
+export interface RunningAgent {
+  pid: number
+  cwd: string
+  kind: string
+  sessionId: string
+  name: string
+  startedAt: number
+}
+
 export interface GitState {
   isRepo: boolean
   branch: string
@@ -85,7 +94,15 @@ const api = {
     ipcRenderer.invoke('links:set', links),
 
   listSessions: (): Promise<SessionSummary[]> => ipcRenderer.invoke('sessions:list'),
+  listRunning: (): Promise<RunningAgent[]> => ipcRenderer.invoke('sessions:running'),
   weeklyUsage: (): Promise<UsageWindow> => ipcRenderer.invoke('usage:weekly'),
+
+  getHidden: (): Promise<string[]> => ipcRenderer.invoke('sessions:hidden'),
+  setHidden: (ids: string[]): Promise<string[]> => ipcRenderer.invoke('sessions:setHidden', ids),
+
+  openSession: (sessionId: string, cwd: string): Promise<SpawnResult> =>
+    ipcRenderer.invoke('agent:open', { sessionId, cwd }),
+  stopAgent: (pid: number): Promise<SpawnResult> => ipcRenderer.invoke('agent:stop', pid),
 
   gitState: (cwd: string): Promise<GitState> => ipcRenderer.invoke('git:state', cwd),
   unmergedBranches: (cwd: string): Promise<{ branch: string; ahead: number }[]> =>

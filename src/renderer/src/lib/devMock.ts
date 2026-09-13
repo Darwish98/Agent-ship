@@ -120,6 +120,7 @@ const gitStates: Record<string, GitState> = {
 }
 
 let settings: Settings = { weeklyTokenBudget: 50_000_000 }
+let hiddenIds: string[] = []
 // One example link so the orchestrator wiring is visible while developing.
 let links: OrchestratorLink[] = [{ from: 'orchestrator', to: 's-nova' }]
 
@@ -158,6 +159,20 @@ export function installDevMock(): void {
     getLinks: async () => links,
     setLinks: async (next) => (links = next),
     listSessions: async () => sessions,
+    listRunning: async () => [
+      {
+        pid: 1234,
+        cwd: 'C:/dev/frontend-app',
+        kind: 'interactive',
+        sessionId: 's-nova',
+        name: 'nova',
+        startedAt: now - 600_000
+      }
+    ],
+    getHidden: async () => hiddenIds,
+    setHidden: async (ids) => (hiddenIds = ids),
+    openSession: async () => ({ ok: true }),
+    stopAgent: async () => ({ ok: true }),
     weeklyUsage: async () => ({ weeklyTokens: 31_400_000, since: now - 7 * 864e5 }),
     gitState: async (cwd) =>
       gitStates[cwd] ?? {

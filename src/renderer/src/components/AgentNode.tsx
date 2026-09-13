@@ -37,14 +37,20 @@ function EnvelopeBadge({ count }: { count: number }): JSX.Element {
 
 export function AgentNode({ data }: NodeProps): JSX.Element {
   const agent = data.agent as Agent
+  const walking = Boolean(data.walking)
+  const facingLeft = Boolean(data.facingLeft)
+  const onOpen = data.onOpen as (a: Agent) => void
+  const onDelete = data.onDelete as (a: Agent) => void
   const badge = badgeFor(agent.role, agent.isOrchestrator)
   const level = batteryLevel(agent)
 
   return (
-    <div className={`agent-node${agent.live ? ' is-live' : ' is-idle'}`}>
+    <div
+      className={`agent-node${agent.live ? ' is-live' : ' is-idle'}${walking ? ' is-walking' : ''}`}
+    >
       <Handle type="target" position={Position.Top} className="agent-handle" />
 
-      <div className="agent-figure">
+      <div className="agent-figure" style={{ transform: facingLeft ? 'scaleX(-1)' : undefined }}>
         {agent.hasEnvelope && <EnvelopeBadge count={agent.aheadCommits} />}
         <AgentSprite
           agentKey={agent.key}
@@ -91,7 +97,30 @@ export function AgentNode({ data }: NodeProps): JSX.Element {
           <span>{agent.live ? agent.status : formatAgo(agent.lastActive)}</span>
         </div>
         {agent.task && <div className="hovercard-task">{truncate(agent.task, 90)}</div>}
-        <div className="hovercard-hint">Click to give a new task</div>
+
+        <div className="hovercard-actions">
+          <button
+            type="button"
+            className="hovercard-btn"
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpen(agent)
+            }}
+          >
+            Open in Claude Code
+          </button>
+          <button
+            type="button"
+            className="hovercard-btn hovercard-btn-danger"
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete(agent)
+            }}
+          >
+            {agent.live ? 'Stop' : 'Remove'}
+          </button>
+        </div>
+        <div className="hovercard-hint">Click the agent to give it a new task</div>
       </div>
     </div>
   )

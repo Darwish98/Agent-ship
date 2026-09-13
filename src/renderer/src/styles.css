@@ -301,11 +301,8 @@ body,
 
 /* --- agents ----------------------------------------------------------- */
 
-.react-flow__node-agent {
-  /* The wander step only changes the node transform - the transition is what
-     makes it read as walking rather than teleporting. */
-  transition: transform 1.6s ease-in-out;
-}
+/* Movement duration is set per-step in JS (distance / constant speed), so the
+   transition lives on the node's inline style rather than here. */
 
 .agent-node {
   position: relative;
@@ -321,8 +318,70 @@ body,
   line-height: 0;
 }
 
-.agent-node.is-live .agent-figure {
-  animation: agent-bob 2.6s ease-in-out infinite;
+/* Walk cycle: legs scissor and the body bobs on the step, but only while
+   actually travelling. The animation sits on the sprite, not the figure,
+   because the figure carries the left/right facing flip. */
+.leg {
+  transform-box: fill-box;
+  transform-origin: 50% 0%;
+}
+
+.agent-node.is-walking .leg-l {
+  animation: leg-swing-l 0.42s ease-in-out infinite;
+}
+
+.agent-node.is-walking .leg-r {
+  animation: leg-swing-r 0.42s ease-in-out infinite;
+}
+
+.agent-node.is-walking .agent-sprite {
+  animation: walk-bob 0.42s ease-in-out infinite;
+}
+
+/* Standing in-session: a slow breath, so a live agent that isn't walking
+   still reads as alive without pacing the room. */
+.agent-node.is-live:not(.is-walking) .agent-sprite {
+  animation: agent-breathe 3.4s ease-in-out infinite;
+}
+
+@keyframes leg-swing-l {
+  0%,
+  100% {
+    transform: rotate(22deg);
+  }
+  50% {
+    transform: rotate(-22deg);
+  }
+}
+
+@keyframes leg-swing-r {
+  0%,
+  100% {
+    transform: rotate(-22deg);
+  }
+  50% {
+    transform: rotate(22deg);
+  }
+}
+
+@keyframes walk-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes agent-breathe {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1.5px);
+  }
 }
 
 /* A past session is parked, not working: no bob, muted tag, and an age
@@ -346,16 +405,6 @@ body,
   background: rgb(255 255 255 / 70%);
   border-radius: 4px;
   padding: 0 4px;
-}
-
-@keyframes agent-bob {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-3px);
-  }
 }
 
 .envelope {
@@ -527,6 +576,42 @@ body,
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #918d83;
+}
+
+.hovercard-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 9px;
+  /* The card itself ignores the pointer so it never blocks the canvas; the
+     buttons have to opt back in. */
+  pointer-events: auto;
+}
+
+.hovercard-btn {
+  flex: 1 1 auto;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 5px 7px;
+  border-radius: 6px;
+  border: 1px solid rgb(255 255 255 / 22%);
+  background: rgb(255 255 255 / 10%);
+  color: #f7f5ef;
+  cursor: pointer;
+}
+
+.hovercard-btn:hover {
+  background: rgb(255 255 255 / 20%);
+}
+
+.hovercard-btn-danger {
+  flex: 0 0 auto;
+  border-color: rgb(224 120 90 / 55%);
+  color: #f0a58c;
+}
+
+.hovercard-btn-danger:hover {
+  background: rgb(224 120 90 / 26%);
 }
 
 /* --- orchestrator ----------------------------------------------------- */

@@ -36,6 +36,10 @@ export interface Agent {
   aheadCommits: number
   dirtyFiles: number
   isOrchestrator: boolean
+  /** Process id when Claude Code reports this session as running. */
+  pid?: number
+  /** "interactive" or a background kind, from claude agents --json. */
+  kind?: string
 }
 
 export {}

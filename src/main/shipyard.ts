@@ -79,6 +79,18 @@ export function saveSettings(dir: string, patch: Partial<Settings>): Settings {
   return next
 }
 
+export function loadHidden(dir: string): string[] {
+  const list = readJson<string[]>(filePath(dir, 'hidden.json'), [])
+  return Array.isArray(list) ? list : []
+}
+
+/** Hiding a finished session removes it from the building only - its
+ *  transcript on disk is never touched. */
+export function setHidden(dir: string, ids: string[]): string[] {
+  writeJson(dir, 'hidden.json', ids)
+  return ids
+}
+
 export function loadLinks(dir: string): OrchestratorLink[] {
   const list = readJson<OrchestratorLink[]>(filePath(dir, 'links.json'), [])
   return Array.isArray(list) ? list : []

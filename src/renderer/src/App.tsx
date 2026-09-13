@@ -68,6 +68,9 @@ export default function App(): JSX.Element {
   const { rooms, agents, settings, weeklyTokens } = world
 
   const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(new Map())
+  const [motion, setMotion] = useState<
+    Map<string, { walking: boolean; facingLeft: boolean; duration: number }>
+  >(new Map())
   const [links, setLinks] = useState<OrchestratorLink[]>([])
   const [dialog, setDialog] = useState<TaskDialogSpec | null>(null)
   const agentsRef = useRef(agents)
@@ -106,12 +109,40 @@ export default function App(): JSX.Element {
   // live one is what made the building read as a demo.
   useEffect(() => {
     const timer = setInterval(() => {
+      const steps: { key: string; from: Spot; to: Spot }[] = []
+
       setPositions((prev) => {
         const next = new Map(prev)
         for (const agent of agentsRef.current) {
           if (!agent.live) continue
           if (Math.random() > 0.45) continue
-          next.set(agent.key, spotAwayFrom(neighbours(agent.roomId, agent.key, next)))
+          const from = next.get(agent.key)
+          const to = spotAwayFrom(neighbours(agent.roomId, agent.key, next))
+          next.set(agent.key, to)
+          if (from) steps.push({ key: agent.key, from, to })
+        }
+        return next
+      })
+
+      if (!steps.length) return
+
+      // Walk at a roughly constant speed rather than easing every move into
+      // the same slot - a short shuffle and a long stroll should not take the
+      // same time, which is what made the movement look like gliding.
+      setMotion((prev) => {
+        const next = new Map(prev)
+        for (const { key, from, to } of steps) {
+          const dist = Math.hypot(to.x - from.x, to.y - from.y)
+          const duration = Math.min(2600, Math.max(500, Math.round(dist * 11)))
+          next.set(key, { walking: true, facingLeft: to.x < from.x, duration })
+          window.setTimeout(() => {
+            setMotion((m) => {
+              const after = new Map(m)
+              const cur = after.get(key)
+              if (cur) after.set(key, { ...cur, walking: false })
+              return after
+            })
+          }, duration)
         }
         return next
       })
@@ -166,6 +197,50 @@ export default function App(): JSX.Element {
       }
     })
   }, [rooms])
+
+  const openInClaudeCode = useCallback((agent: Agent) => {
+    void window.agentShip.openSession(agent.sessionId, agent.cwd)
+  }, [])
+
+  // "Delete" means two different things depending on whether the session is
+  // alive: stop the process, or drop a finished session from the building.
+  // Neither ever deletes the transcript on disk.
+  const deleteAgent = useCallback(
+    (agent: Agent) => {
+      if (agent.live && agent.pid) {
+        setDialog({
+          title: `Stop ${agent.name}?`,
+          subtitle: `${agent.kind ?? 'session'} · pid ${agent.pid} · ${agent.cwd}`,
+          warning: [
+            'This kills the running Claude Code process.',
+            'Its transcript is kept, so you can resume the session afterwards.'
+          ],
+          taskField: false,
+          submitLabel: 'Stop agent',
+          onSubmit: async () => {
+            const result = await window.agentShip.stopAgent(agent.pid!)
+            if (!result.ok) return result.error ?? 'Could not stop the agent.'
+            await world.refreshSessions()
+            return null
+          }
+        })
+        return
+      }
+
+      setDialog({
+        title: `Remove ${agent.name}?`,
+        subtitle: 'Takes this finished session out of the building.',
+        warning: ['Its transcript is left untouched on disk - nothing is deleted.'],
+        taskField: false,
+        submitLabel: 'Remove',
+        onSubmit: async () => {
+          await world.hideAgent(agent.sessionId)
+          return null
+        }
+      })
+    },
+    [world]
+  )
 
   const envelopeAgents = useMemo(() => agents.filter((a) => a.hasEnvelope), [agents])
 
@@ -275,6 +350,7 @@ export default function App(): JSX.Element {
       })
 
       for (const agent of roomAgents) {
+        const m = motion.get(agent.key)
         // extent:'parent' is what guarantees a wandering agent can never be
         // clipped by its room's edge.
         out.push({
@@ -284,7 +360,15 @@ export default function App(): JSX.Element {
           extent: 'parent',
           position: positions.get(agent.key) ?? randomSpot(),
           draggable: false,
-          data: { agent }
+          // Linear, distance-scaled: a walk, not an ease-in-out glide.
+          style: { transition: `transform ${m?.duration ?? 900}ms linear` },
+          data: {
+            agent,
+            walking: m?.walking ?? false,
+            facingLeft: m?.facingLeft ?? false,
+            onOpen: openInClaudeCode,
+            onDelete: deleteAgent
+          }
         })
       }
     })
@@ -294,12 +378,15 @@ export default function App(): JSX.Element {
     rooms,
     agents,
     positions,
+    motion,
     links.length,
     envelopeAgents.length,
     openSpawn,
     removeRoom,
     openMergeAll,
-    openOrchestratorBrief
+    openOrchestratorBrief,
+    openInClaudeCode,
+    deleteAgent
   ])
 
   const edges = useMemo<Edge[]>(() => {

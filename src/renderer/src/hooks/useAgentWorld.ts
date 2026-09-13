@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentEvent, GitState, Project, SessionSummary, Settings } from '../../../preload'
+import type {
+  AgentEvent,
+  GitState,
+  Project,
+  RunningAgent,
+  SessionSummary,
+  Settings
+} from '../../../preload'
 import type { Agent, Room } from '../types'
 
 /** A session counts as "live" if it emitted a hook event this recently. */
@@ -47,11 +54,16 @@ export interface World {
   refreshSessions: () => Promise<void>
   setBudget: (budget: number) => Promise<void>
   gitStateFor: (cwd: string) => GitState | undefined
+  hideAgent: (sessionId: string) => Promise<void>
+  unhideAll: () => Promise<void>
+  hiddenCount: number
 }
 
 export function useAgentWorld(): World {
   const [projects, setProjects] = useState<Project[]>([])
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [running, setRunning] = useState<RunningAgent[]>([])
+  const [hidden, setHiddenState] = useState<string[]>([])
   const [live, setLive] = useState<Map<string, LiveRecord>>(new Map())
   const [gitStates, setGitStates] = useState<Map<string, GitState>>(new Map())
   const [settings, setSettings] = useState<Settings>({ weeklyTokenBudget: 50_000_000 })
@@ -65,7 +77,12 @@ export function useAgentWorld(): World {
   }, [])
 
   const refreshSessions = useCallback(async () => {
-    setSessions(await window.agentShip.listSessions())
+    const [list, alive] = await Promise.all([
+      window.agentShip.listSessions(),
+      window.agentShip.listRunning()
+    ])
+    setSessions(list)
+    setRunning(alive)
   }, [])
 
   const refreshUsage = useCallback(async () => {
@@ -78,6 +95,7 @@ export function useAgentWorld(): World {
     void refreshSessions()
     void refreshUsage()
     void window.agentShip.getSettings().then(setSettings)
+    void window.agentShip.getHidden().then(setHiddenState)
   }, [refreshProjects, refreshSessions, refreshUsage])
 
   // Hook events from Claude Code, relayed by the local bridge.
@@ -145,13 +163,21 @@ export function useAgentWorld(): World {
 
   // --- agents ------------------------------------------------------------
 
+  const runningBySession = useMemo(() => {
+    const map = new Map<string, RunningAgent>()
+    for (const r of running) map.set(r.sessionId, r)
+    return map
+  }, [running])
+
   const agents = useMemo<Agent[]>(() => {
     const byKey = new Map<string, Agent>()
     const now = Date.now()
+    const hiddenSet = new Set(hidden)
 
     // Past sessions first, so a live event can enrich the same record.
     for (const s of sessions) {
       if (now - s.updatedAt > SESSION_MAX_AGE_MS) continue
+      if (hiddenSet.has(s.sessionId)) continue
       const roomId = roomIdFor(s.cwd)
       if (!roomId) continue
       byKey.set(s.sessionId, {
@@ -201,6 +227,19 @@ export function useAgentWorld(): World {
       })
     }
 
+    // Liveness comes from Claude Code itself: hook events only fire on tool
+    // use, so a session mid-conversation looks dead to them. A process that
+    // Claude Code reports as running is running.
+    for (const agent of byKey.values()) {
+      const proc = runningBySession.get(agent.sessionId)
+      if (proc) {
+        agent.live = true
+        agent.pid = proc.pid
+        agent.kind = proc.kind
+        if (!agent.status || agent.status === 'idle') agent.status = 'in session'
+      }
+    }
+
     // Layer git state on: branch, and whether there's work not on the base
     // branch yet (the envelope).
     for (const agent of byKey.values()) {
@@ -226,7 +265,7 @@ export function useAgentWorld(): World {
       out.push(...list.slice(0, MAX_AGENTS_PER_ROOM))
     }
     return out
-  }, [sessions, liveList, roomIdFor, gitStates])
+  }, [sessions, liveList, roomIdFor, gitStates, runningBySession, hidden])
 
   // --- git polling -------------------------------------------------------
 
@@ -261,6 +300,20 @@ export function useAgentWorld(): World {
     }
   }, [cwdKey])
 
+  const hideAgent = useCallback(
+    async (sessionId: string) => {
+      const next = [...new Set([...hidden, sessionId])]
+      setHiddenState(next)
+      await window.agentShip.setHidden(next)
+    },
+    [hidden]
+  )
+
+  const unhideAll = useCallback(async () => {
+    setHiddenState([])
+    await window.agentShip.setHidden([])
+  }, [])
+
   const setBudget = useCallback(async (weeklyTokenBudget: number) => {
     setSettings(await window.agentShip.setSettings({ weeklyTokenBudget }))
   }, [])
@@ -276,6 +329,9 @@ export function useAgentWorld(): World {
     refreshProjects,
     refreshSessions,
     setBudget,
-    gitStateFor
+    gitStateFor,
+    hideAgent,
+    unhideAll,
+    hiddenCount: hidden.length
   }
 }
