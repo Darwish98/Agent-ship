@@ -63,6 +63,8 @@ export function AgentNode({ data }: NodeProps): JSX.Element {
         <span className="agent-name">{truncate(agent.name, 14)}</span>
       </div>
 
+      {!agent.live && <div className="agent-asleep">{formatAgo(agent.lastActive)}</div>}
+
       <div className="agent-hovercard">
         <div className="hovercard-row hovercard-title">{agent.name}</div>
         <div className="hovercard-row">

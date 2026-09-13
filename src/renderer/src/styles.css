@@ -325,6 +325,29 @@ body,
   animation: agent-bob 2.6s ease-in-out infinite;
 }
 
+/* A past session is parked, not working: no bob, muted tag, and an age
+   stamp, so it can't be mistaken for a live agent (or for demo filler). */
+.agent-node.is-idle .agent-tag {
+  background: rgb(255 255 255 / 62%);
+  border-style: dashed;
+}
+
+.agent-node.is-idle .agent-name {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.agent-asleep {
+  margin-top: 2px;
+  font-size: 8.5px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  background: rgb(255 255 255 / 70%);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
 @keyframes agent-bob {
   0%,
   100% {

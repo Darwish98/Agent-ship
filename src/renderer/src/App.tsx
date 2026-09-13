@@ -101,12 +101,15 @@ export default function App(): JSX.Element {
     })
   }, [agents, neighbours])
 
-  // The world stays alive between events: everyone drifts around their room.
+  // The world stays alive between events - but only agents that are actually
+  // working move. A finished session from yesterday pacing its room like a
+  // live one is what made the building read as a demo.
   useEffect(() => {
     const timer = setInterval(() => {
       setPositions((prev) => {
         const next = new Map(prev)
         for (const agent of agentsRef.current) {
+          if (!agent.live) continue
           if (Math.random() > 0.45) continue
           next.set(agent.key, spotAwayFrom(neighbours(agent.roomId, agent.key, next)))
         }

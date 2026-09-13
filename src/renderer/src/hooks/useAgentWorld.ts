@@ -4,8 +4,10 @@ import type { Agent, Room } from '../types'
 
 /** A session counts as "live" if it emitted a hook event this recently. */
 const LIVE_WINDOW_MS = 3 * 60 * 1000
-/** Past sessions older than this are not worth putting on the canvas. */
-const SESSION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+/** Past sessions older than this are not worth putting on the canvas.
+ *  Sessions are already filtered upstream to ones Claude Code named, so this
+ *  only trims genuinely stale history. */
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const MAX_AGENTS_PER_ROOM = 8
 
 function pathsMatch(cwd: string, projectPath: string): boolean {
@@ -107,6 +109,10 @@ export function useAgentWorld(): World {
 
   const liveList = useMemo(() => [...live.values()], [live])
 
+  // Rooms are auto-detected from Claude Code's own projects: every folder it
+  // has named sessions for gets a room, the same way its sidebar lists them.
+  // Explicitly registered projects are merged in so a folder you added before
+  // ever running Claude Code there still gets a room.
   const rooms = useMemo<Room[]>(() => {
     const registered: Room[] = projects.map((p) => ({ id: p.id, name: p.name, path: p.path }))
     const extra = new Map<string, Room>()

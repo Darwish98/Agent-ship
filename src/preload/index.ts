@@ -22,6 +22,7 @@ export interface SessionSummary {
   title: string
   lastPrompt: string
   model: string
+  entrypoint: string
   updatedAt: number
   contextTokens: number
   contextLimit: number

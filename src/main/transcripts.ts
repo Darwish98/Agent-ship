@@ -12,6 +12,8 @@ export interface SessionSummary {
   title: string
   lastPrompt: string
   model: string
+  /** How the session was started: claude-desktop, cli, sdk-cli... */
+  entrypoint: string
   updatedAt: number
   /** Context tokens occupied by the last assistant turn (battery). */
   contextTokens: number
@@ -130,26 +132,36 @@ function summarizeFile(file: string): SessionSummary | null {
   let cwd = ''
   let gitBranch = ''
   let model = ''
+  let entrypoint = ''
   let contextTokens = 0
   let isSidechain = false
   let sessionId = path.basename(file, '.jsonl')
 
+  // Claude Code names a session either explicitly (custom-title) or by
+  // summarising it (ai-title); both count as "this session is real work".
+  const readTitle = (o: Record<string, unknown>): void => {
+    if (o.type === 'custom-title' && typeof o.customTitle === 'string') title = o.customTitle
+    else if (o.type === 'ai-title' && typeof o.title === 'string' && !title) title = o.title
+  }
+
   for (const line of head) {
     const o = safeParse(line)
     if (!o) continue
-    if (o.type === 'custom-title' && typeof o.customTitle === 'string') title = o.customTitle
+    readTitle(o)
     if (typeof o.cwd === 'string' && !cwd) cwd = o.cwd
     if (typeof o.sessionId === 'string') sessionId = o.sessionId
+    if (typeof o.entrypoint === 'string') entrypoint = o.entrypoint
   }
 
   // The tail holds the freshest state: latest branch, latest model, latest usage.
   for (const line of tail) {
     const o = safeParse(line)
     if (!o) continue
-    if (o.type === 'custom-title' && typeof o.customTitle === 'string') title = o.customTitle
+    readTitle(o)
     if (o.type === 'last-prompt' && typeof o.lastPrompt === 'string') lastPrompt = o.lastPrompt
     if (typeof o.cwd === 'string') cwd = o.cwd
     if (typeof o.gitBranch === 'string') gitBranch = o.gitBranch
+    if (typeof o.entrypoint === 'string') entrypoint = o.entrypoint
     if (o.isSidechain === true) isSidechain = true
     const message = o.message as { model?: string; usage?: Usage } | undefined
     if (o.type === 'assistant' && message?.usage) {
@@ -158,15 +170,18 @@ function summarizeFile(file: string): SessionSummary | null {
     }
   }
 
-  if (!cwd) return null
+  // An untitled session is a scratch/aborted run - Claude Code doesn't list
+  // those either, and they were the ones reading as demo filler here.
+  if (!cwd || !title) return null
 
   return {
     sessionId,
     cwd,
     gitBranch,
-    title: title || lastPrompt.slice(0, 60) || path.basename(cwd),
+    title,
     lastPrompt,
     model,
+    entrypoint,
     updatedAt: stat.mtimeMs,
     contextTokens,
     contextLimit: contextLimitFor(model),
