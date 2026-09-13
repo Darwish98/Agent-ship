@@ -100,8 +100,8 @@ const api = {
   getHidden: (): Promise<string[]> => ipcRenderer.invoke('sessions:hidden'),
   setHidden: (ids: string[]): Promise<string[]> => ipcRenderer.invoke('sessions:setHidden', ids),
 
-  openSession: (sessionId: string, cwd: string): Promise<SpawnResult> =>
-    ipcRenderer.invoke('agent:open', { sessionId, cwd }),
+  openSession: (sessionId: string): Promise<SpawnResult> =>
+    ipcRenderer.invoke('agent:open', sessionId),
   stopAgent: (pid: number): Promise<SpawnResult> => ipcRenderer.invoke('agent:stop', pid),
 
   gitState: (cwd: string): Promise<GitState> => ipcRenderer.invoke('git:state', cwd),

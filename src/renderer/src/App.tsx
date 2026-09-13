@@ -199,7 +199,7 @@ export default function App(): JSX.Element {
   }, [rooms])
 
   const openInClaudeCode = useCallback((agent: Agent) => {
-    void window.agentShip.openSession(agent.sessionId, agent.cwd)
+    void window.agentShip.openSession(agent.sessionId)
   }, [])
 
   // "Delete" means two different things depending on whether the session is

@@ -1,6 +1,7 @@
 // Launches real Claude Code background agents (`claude --bg`) - the same
 // first-class session mechanism the Claude Code CLI uses, so anything spawned
 // here also shows up in `claude agents` / /resume, not just in this app.
+import { shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -42,29 +43,20 @@ export async function listRunningAgents(): Promise<RunningAgent[]> {
   }
 }
 
-/** Opens Claude Code on exactly this session, in its own working directory. */
-export function openSession(sessionId: string, cwd: string): SpawnResult {
-  if (!sessionId) return { ok: false, error: 'No session id.' }
+const SESSION_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+
+/**
+ * Opens this session in Claude Desktop's Code section via its own deep link.
+ *
+ * Claude Desktop registers the `claude://` scheme and routes `resume` by
+ * importing the CLI session with that id; the id must be a bare UUID, which
+ * is exactly what Claude Code names its transcripts. (Its sibling route,
+ * `code/continue`, only accepts desktop-native `local_*` ids or "last".)
+ */
+export async function openSession(sessionId: string): Promise<SpawnResult> {
+  if (!SESSION_UUID.test(sessionId)) return { ok: false, error: 'Not a Claude Code session id.' }
   try {
-    if (process.platform === 'win32') {
-      // `start` is a cmd builtin, and the extra "" is start's title argument -
-      // without it the first quoted token is swallowed as the window title.
-      spawn('cmd.exe', ['/c', 'start', '', 'cmd', '/k', 'claude', '--resume', sessionId], {
-        cwd,
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: false
-      }).unref()
-    } else if (process.platform === 'darwin') {
-      const script = `tell application "Terminal" to do script "cd ${JSON.stringify(cwd)} && claude --resume ${sessionId}"`
-      spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref()
-    } else {
-      spawn('x-terminal-emulator', ['-e', `claude --resume ${sessionId}`], {
-        cwd,
-        detached: true,
-        stdio: 'ignore'
-      }).unref()
-    }
+    await shell.openExternal(`claude://resume?session=${sessionId}`)
     return { ok: true }
   } catch (err) {
     return { ok: false, error: String((err as Error).message ?? err) }

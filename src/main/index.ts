@@ -118,9 +118,7 @@ function registerIpcHandlers(): void {
     shipyard.setHidden(userDataDir(), ids)
   )
 
-  ipcMain.handle('agent:open', (_evt, a: { sessionId: string; cwd: string }) =>
-    openSession(a.sessionId, a.cwd)
-  )
+  ipcMain.handle('agent:open', (_evt, sessionId: string) => openSession(sessionId))
   ipcMain.handle('agent:stop', (_evt, pid: number) => stopAgent(pid))
 
   ipcMain.handle('git:state', (_evt, cwd: string) => gitState(cwd))
