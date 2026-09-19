@@ -17,6 +17,21 @@ import { listSessions, weeklyUsage } from './transcripts'
 
 let mainWindow: BrowserWindow | null = null
 
+app.setName('Agent Ship')
+
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+  process.exit(0)
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
+
 function userDataDir(): string {
   return app.getPath('userData')
 }
