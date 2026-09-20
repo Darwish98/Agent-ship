@@ -172,3 +172,102 @@ describe('summary numbers', () => {
     expect(f.spendTodayUsd).toBeCloseTo(3)
   })
 })
+
+// --- pipeline inside every task -------------------------------------------------
+
+import { buildLandBlueprint, LAND_FLOW } from './patterns'
+import { pipelineForRun, pipelineForSession } from './floor'
+
+const states = (item: { pipeline: { id: string; state: string }[] }): string =>
+  item.pipeline.map((s) => `${s.id}:${s.state}`).join(' ')
+
+function landRun(opts: { branch?: string; startedAt?: number; project?: string; upTo?: 'test' | 'merge' | 'verify' | 'land'; fail?: 'test' | 'merge' | 'verify' | 'land'; end?: 'passed' | 'failed' | null }): RunView {
+  const id = `00000000-0000-0000-0001-${String(++n).padStart(12, '0')}`
+  const bp = buildLandBlueprint({ branch: opts.branch ?? 'feat/x', base: 'main', testCommand: 'npm test', resolveConflicts: true })
+  const t = opts.startedAt ?? NOW - 60_000
+  const ev: RunEvent[] = [
+    { type: 'run.started', at: t, runId: id, projectId: opts.project ?? 'p1', projectName: 'repo', projectPath: '/r', flowSlug: LAND_FLOW, blueprint: bp, inputs: { branch: opts.branch ?? 'feat/x' }, ceilingUsd: 1 }
+  ]
+  const order = ['test', 'merge', 'verify', 'land'] as const
+  const upTo = opts.upTo ?? 'land'
+  let k = 1
+  for (const step of order) {
+    if (order.indexOf(step) > order.indexOf(upTo)) break
+    ev.push({ type: 'node.started', at: t + k++, runId: id, nodeId: step, attempt: 1, cwd: '/w' })
+    const isGate = step === 'test' || step === 'verify'
+    const bad = opts.fail === step
+    if (isGate) ev.push({ type: 'gate.result', at: t + k++, runId: id, nodeId: step, attempt: 1, pass: !bad, by: 'command', detail: bad ? 'exit 1' : 'exit 0' })
+    else if (opts.end !== null || step !== upTo) ev.push({ type: 'node.finished', at: t + k++, runId: id, nodeId: step, attempt: 1, status: bad ? 'failed' : 'passed', costUsd: 0, tokens: 0, summary: 'ok', error: bad ? 'conflicts in README.md' : undefined })
+    if (bad) break
+  }
+  if (opts.end === 'passed') ev.push({ type: 'run.finished', at: t + 50, runId: id, status: 'passed', reason: 'Finished every step.', branch: opts.branch ?? 'feat/x' })
+  if (opts.end === 'failed') ev.push({ type: 'run.finished', at: t + 50, runId: id, status: 'failed', reason: opts.fail === 'merge' ? 'feat/x conflicts with main in: README.md. Nothing was changed.' : `${opts.fail} failed`, branch: opts.branch ?? 'feat/x' })
+  return foldRun(ev)!
+}
+
+describe('the pipeline inside every task', () => {
+  it('a session that is still working has only built so far', () => {
+    expect(pipelineForSession(session({ live: true })).map((s) => `${s.id}:${s.state}`).join(' ')).toBe('build:running test:idle merge:idle land:idle')
+    expect(pipelineForSession(session({ live: false })).map((s) => s.state)).toEqual(['passed', 'idle', 'idle', 'idle'])
+  })
+
+  it('a flow run maps agents to Build, gates to Test, and marks Merge and Land as not part of it', () => {
+    const r = makeRun({ end: 'passed', gatePass: true, branch: 'agentship/a-build' })
+    expect(states({ pipeline: pipelineForRun(r) })).toBe('build:passed test:passed merge:skipped land:skipped')
+  })
+
+  it('an unlanded branch shows built, then tested or not, then two idle steps', () => {
+    const f = derive({ branches: [branch()] })
+    expect(states(f.byLane.ready[0])).toBe('build:passed test:idle merge:idle land:idle')
+    expect(f.byLane.ready[0].pipeline[1].note).toMatch(/Landing tests it first/)
+    const proven = makeRun({ end: 'passed', gatePass: true, branch: 'agentship/p-build' })
+    const g = derive({ runs: [proven], branches: [branch({ branch: 'agentship/p-build' })] })
+    expect(states(g.byLane.ready[0])).toBe('build:passed test:passed merge:idle land:idle')
+  })
+
+  it('a landing run becomes the branch card\'s own pipeline instead of a second card', () => {
+    const lr = landRun({ upTo: 'merge', end: null })
+    const f = derive({ runs: [lr], branches: [branch()] })
+    expect(f.items.filter((i) => i.kind === 'run')).toHaveLength(0)
+    expect(f.byLane.running).toHaveLength(1)
+    const item = f.byLane.running[0]
+    expect(item.kind).toBe('branch')
+    expect(states(item)).toBe('build:passed test:passed merge:running land:idle')
+    expect(item.subtitle).toBe('Landing: Merge into main')
+    expect(item.landRun?.runId).toBe(lr.runId)
+  })
+
+  it('a landing that failed on a conflict goes to Needs you, on the same card, until dismissed', () => {
+    const lr = landRun({ upTo: 'merge', fail: 'merge', end: 'failed' })
+    const f = derive({ runs: [lr], branches: [branch()] })
+    expect(f.byLane.needs).toHaveLength(1)
+    expect(f.byLane.needs[0].kind).toBe('branch')
+    expect(f.byLane.needs[0].reasons[0]).toMatch(/Landing stopped: feat\/x conflicts with main/)
+    expect(states(f.byLane.needs[0])).toBe('build:passed test:passed merge:failed land:idle')
+    const g = derive({ runs: [lr], branches: [branch()], acknowledged: new Set([lr.runId]) })
+    expect(g.byLane.needs).toHaveLength(0)
+    expect(g.byLane.ready).toHaveLength(1)
+  })
+
+  it('tests that fail during landing mark the branch itself as failed', () => {
+    const lr = landRun({ upTo: 'test', fail: 'test', end: 'failed' })
+    const f = derive({ runs: [lr], branches: [branch()] })
+    expect(f.byLane.needs[0].verification).toEqual({ state: 'failed', by: 'Test the branch' })
+    expect(states(f.byLane.needs[0])).toBe('build:passed test:failed merge:idle land:idle')
+  })
+
+  it('ignores a landing attempt from before the branch got new commits', () => {
+    const lr = landRun({ upTo: 'merge', fail: 'merge', end: 'failed', startedAt: NOW - 5 * HOUR })
+    const f = derive({ runs: [lr], branches: [branch({ lastCommitAt: NOW - HOUR })] })
+    expect(f.byLane.needs).toHaveLength(0)
+    expect(states(f.byLane.ready[0])).toBe('build:passed test:idle merge:idle land:idle')
+  })
+
+  it('once the branch is landed and gone, the run stands alone in Done as "Landed"', () => {
+    const lr = landRun({ end: 'passed' })
+    const f = derive({ runs: [lr], branches: [] })
+    expect(f.byLane.done).toHaveLength(1)
+    expect(f.byLane.done[0].subtitle).toBe('Landed')
+    expect(states(f.byLane.done[0])).toBe('build:passed test:passed merge:passed land:passed')
+  })
+});

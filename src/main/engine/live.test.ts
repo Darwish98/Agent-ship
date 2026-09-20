@@ -129,3 +129,36 @@ describe.skipIf(!live)('real claude CLI', () => {
     expect(ids.size).toBe(1)
   }, 240_000)
 })
+
+describe.skipIf(!live)('real claude CLI: landing with a merge conflict', () => {
+  it('lets the real model resolve a conflict under the restricted tools, then lands a clean merge', async () => {
+    const { buildLandBlueprint } = await import('../../shared/patterns')
+    // Two branches change the same line differently.
+    fs.writeFileSync(path.join(repo, 'notes.txt'), 'shared line\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'add notes')
+    git('checkout', '-q', '-b', 'feat/conflict')
+    fs.writeFileSync(path.join(repo, 'notes.txt'), 'shared line: FEATURE wording\n')
+    git('commit', '-qam', 'feature edit')
+    git('checkout', '-q', 'main')
+    fs.writeFileSync(path.join(repo, 'notes.txt'), 'shared line: MAIN wording\n')
+    git('commit', '-qam', 'main edit')
+
+    const events: RunEvent[] = []
+    const engine = new RunEngine({ adapter: new ClaudeCodeAdapter(), worktreeRoot: path.join(root, 'wt4'), emit: (e) => events.push(e) })
+    const bp = buildLandBlueprint({ branch: 'feat/conflict', base: 'main', testCommand: '', resolveConflicts: true, maxUsd: 0.3 })
+    const started = await engine.start({ projectId: 'p', projectName: 'live', projectPath: repo, flowSlug: '__land__', blueprint: bp, inputs: { branch: 'feat/conflict' } })
+    if (!started.ok) throw new Error(started.error)
+    await engine.whenDone(started.runId)
+    const v = foldRun(events)!
+    console.log(JSON.stringify({ status: v.status, reason: v.reason, spentUsd: v.spentUsd, merge: v.nodes.merge.detail, notes: git('show', 'main:notes.txt') }))
+
+    expect(v.status).toBe('passed')
+    expect(v.spentUsd).toBeGreaterThan(0)
+    const merged = git('show', 'main:notes.txt')
+    expect(merged).not.toMatch(/<<<<<<<|=======|>>>>>>>/)
+    expect(merged).toMatch(/FEATURE/)
+    expect(merged).toMatch(/MAIN/)
+    expect(git('rev-list', '--parents', '-n', '1', 'main').split(' ')).toHaveLength(3)
+  }, 240_000)
+})

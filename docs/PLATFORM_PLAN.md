@@ -224,16 +224,16 @@ What shipped (`src/main/engine/`, `src/shared/runs.ts`):
 Deviations from the plan, and why:
 - **Engine-managed worktrees, not `claude -w`** (spike finding: `-w` leaves worktrees locked and needs `git worktree` cleanup anyway). Predictable names, kept out of the repo (`<userData>/worktrees`).
 - **The cap is "within one model call", not "never".** The CLI checks the dollar cap after each call. Measured against the real CLI: a $0.02 cap ended at $0.0217; a $0.001 cap at $0.0143. The UI says so. Token limits are only checked when a step ends.
-- **"Land" still uses the earlier background merge agent** (the Merge train prompt); a Merge node in the engine is Phase 3.
+- **"Land" first used the earlier background merge agent, which failed in real use.** It has been replaced by a landing *pipeline* run by the engine (see the rev. 3.1 note in §12).
 
-Not done: resume after restart, parallel branches, merge node, triggers, OS notifications (a Needs-you badge on the rail only).
+Not done: resume after restart, parallel branches, triggers, OS notifications (a Needs-you badge on the rail only). (The merge node was added afterwards, see rev. 3.1.)
 
 How it was verified: 88 tests (fake adapter against a real git repo for the walk, retries, cancel, budget, human gates; store, args, floor rules). Three opt-in **live** tests against the real CLI with Haiku, a few cents each: a one-agent flow ($0.026, real branch, gate passed, worktree gone); the dollar cap stopping a run ($0.02 cap, $0.0217 spent, gate never ran); and a repair loop where the builder writes the wrong content, the gate says so, and the engine resumes the **same real session**, which fixes it ($0.035). A full-UI run in Electron drives the whole path with a fake CLI. The literal exit demo (real planner and reviewer, real project) has **not** been run.
 
 ### Phase 3 — Git-native execution (≈1.5 weeks)
 - Generalise the engine: fan-out/join, parallel scheduling, cancel, resume-after-restart (all deferred from Phase 2).
 - Worktree manager: create, commit and remove already exist per run (Phase 2). Left: an **orphan sweep** for worktrees left by a crash (a killed app cannot clean up), parallel-safe naming, and a preflight message for a repo with no commits (the run start already refuses it).
-- Merge node: ordered merge queue, conflict detection, resolver agent, revert-on-red.
+- ✅ **Merge and Land nodes exist (rev. 3.1)** for one branch at a time: merge in a scratch copy, an agent only if there are conflicts, test the merged result, advance the base only if it is still where it was (revert-on-red for free, since the base never moved). Left: a queue for landing several branches in order, and tests that need more than `node_modules` linked in.
 - Gates: test/typecheck/lint runners with parsed results; retry-with-repair loop with cap.
 - **Exit:** "PR factory" flow: issue text in → tested branch out, no manual git.
 
@@ -339,6 +339,21 @@ What is genuinely new, as far as I can tell (I have not run the competitors; see
 What is *not* new: the four-lane board resembles agent view and Superset's categories, and a node editor is table stakes. If a competitor added gates and a ceiling, the visible product would look similar; the advantage is the engine's guarantees, not the pixels.
 
 **What would make it revolutionary:** (1) evidence on real projects that pipelines produce mergeable work at acceptable cost. Without that the platform is a well-built harness around an unproven claim. (2) Parallel best-of-N with a judge, the pattern only a gated, budgeted, git-native runtime makes safe. (3) Learning from runs: estimate cost and failure risk from history (the ceiling-vs-actual data now exists), and surface which gate fails most.
+
+### 12.3b Rev. 3.1 addendum: landing is a pipeline, and two reported bugs
+
+**Reported and fixed**
+- *Blueprints tab: project dropdown empty.* The editor listed only *registered* projects while the Floor also showed projects merely discovered from Claude sessions, so a machine with none registered saw nothing. Both tabs now share one project list; discovered git repos appear as "(not added yet)" and are registered when picked; there is a "+ Add project" button and an honest empty state. Covered by the Electron test.
+- *"Land" failed.* Landing used a background `claude --bg` agent told to run `git merge` in your real checkout, which had no way to be approved and could not be observed. It is gone. I did not root-cause its exact failure; the design was the problem.
+
+**What landing is now** (engine: `merge` and `land` steps, `gitops.ts`; UI: dialog, card pipeline, drawer)
+1. Test the branch in a scratch copy of it. 2. Merge it into a scratch copy of the base (an agent is called *only* on conflicts, with edit access and `git add/status/diff/show/log` only: no commit, push or checkout). 3. Test the merged result. 4. Move the base, only if it has not moved since; if it is checked out, its files move with it, and a dirty checkout is refused. Any failure leaves the base exactly as it was.
+- The pipeline appears **on every card** as Build → Test → Merge → Land, whatever the task is made of: an ad-hoc session (Build only), a flow run (agents = Build, gates = Test), or a branch (built by a session/run, tested by a gate, landed by a landing run). One task is one card even when it is several real sessions; click a stage in the drawer to see the real steps, output, or open the real session.
+- A landing run is not its own card: it lights the Merge and Land stages of the branch it is landing, moves that card to Running, and to Needs you (with the reason) if it stops.
+
+**Evidence:** 15 real-git tests (clean land; base checked out vs not; tests failing on the branch and on the *merged* result, base untouched; dirty checkout refused; base moving mid-land; conflicts with/without the resolver; a resolver that leaves markers is rejected; dependency links never deleting real `node_modules`); 8 tests for the pipeline rules; the Electron test lands a verified branch into a real repo through the UI; and one opt-in live test where the **real model resolved a real conflict** under the restricted tools ($0.17: the merge step uses your default model, so it is not the cheapest option).
+
+**Limits found:** test-command detection only knows npm, cargo, go and pytest (otherwise you type one, or land unverified, which the dialog says); only `node_modules` is linked into scratch copies, so projects with other untracked dependencies (a Python venv, a build cache) may fail their tests there; landing several branches means landing one at a time; a scratch copy is deleted a few milliseconds after the run reports finished.
 
 ### 12.4 What I did not do
 

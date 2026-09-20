@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { BranchInfo, FlowSummary, GitState } from '../../../preload'
 import { deriveFloor, needsInputStatus, type BranchLite, type FloorModel, type SessionLite } from '../../../shared/floor'
-import { useAgentWorld, type World } from '../hooks/useAgentWorld'
+import type { World } from '../hooks/useAgentWorld'
+import { useWorld } from '../hooks/world'
 import { useRuns } from '../runs/RunsProvider'
 import type { Room } from '../types'
 
@@ -24,7 +25,7 @@ export interface FloorData {
  * gathers the inputs.
  */
 export function useFloorData(active: boolean): FloorData {
-  const world = useAgentWorld()
+  const world = useWorld()
   const { runs, acknowledged } = useRuns()
   const { rooms, agents } = world
 

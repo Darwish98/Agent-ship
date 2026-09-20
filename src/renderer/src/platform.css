@@ -565,3 +565,9 @@
   font-size: 13px;
   color: var(--text-muted);
 }
+
+.bp-project-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}

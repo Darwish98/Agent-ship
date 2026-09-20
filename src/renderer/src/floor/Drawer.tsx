@@ -1,8 +1,10 @@
 import { useEffect, useState, type JSX } from 'react'
-import type { WorkItem } from '../../../shared/floor'
+import { STAGE_LABEL, type StageId, type WorkItem } from '../../../shared/floor'
+import { formatUsd } from '../../../shared/runs'
 import { formatAgo, formatTokens } from '../lib/crew'
-import { RunDetail } from '../runs/RunDetail'
+import { formatDuration, RunDetail } from '../runs/RunDetail'
 import { VerifyBadge, type FloorActions } from './Cards'
+import { PipelineStrip } from './PipelineStrip'
 
 interface Props {
   item: WorkItem
@@ -10,9 +12,12 @@ interface Props {
   projectPath: string
   baseBranch: string
   actions: FloorActions
-  onRunOf: (runId: string) => void
+  onRunOf: (branch: string) => void
   onClose: () => void
 }
+
+const KIND_OF_STAGE: Record<StageId, string> = { build: 'agent', test: 'gate', merge: 'merge', land: 'land' }
+const STEP_GLYPH: Record<string, string> = { idle: '·', running: '●', passed: '✓', failed: '✕', awaiting: '⏸' }
 
 /** The detail view for whatever is selected on the board. */
 export function Drawer({ item, projectName, projectPath, baseBranch, actions, onRunOf, onClose }: Props): JSX.Element {
@@ -28,6 +33,8 @@ export function Drawer({ item, projectName, projectPath, baseBranch, actions, on
           ✕
         </button>
       </header>
+
+      <PipelinePanel item={item} actions={actions} />
 
       {item.kind === 'run' && item.run && <RunDetail run={item.run} />}
 
@@ -47,9 +54,7 @@ export function Drawer({ item, projectName, projectPath, baseBranch, actions, on
               </>
             )}
           </dl>
-          <p className="rd-note">
-            Started outside a flow, so it has no budget ceiling or gate. Only flows can promise those.
-          </p>
+          <p className="rd-note">Started outside a flow, so it has no budget ceiling or gate. Only flows can promise those.</p>
           <div className="rd-actions">
             <button type="button" className="btn btn-primary" onClick={() => actions.openSession(item.session!.sessionId)}>
               Open in Claude Code
@@ -62,9 +67,85 @@ export function Drawer({ item, projectName, projectPath, baseBranch, actions, on
       )}
 
       {item.kind === 'branch' && item.branch && (
-        <BranchPanel item={item} projectPath={projectPath} baseBranch={baseBranch} actions={actions} onRunOf={onRunOf} />
+        <>
+          <BranchPanel item={item} projectPath={projectPath} baseBranch={baseBranch} actions={actions} onRunOf={onRunOf} />
+          {item.landRun && (
+            <>
+              <h4 className="rd-h fl-h-pad">Landing run</h4>
+              <RunDetail run={item.landRun} />
+            </>
+          )}
+        </>
       )}
     </aside>
+  )
+}
+
+/**
+ * The task's pipeline, and what is behind each stage. The strip is the same on
+ * every card; here you can open a stage to see the real steps, sessions and
+ * output that made it, even when they belong to different runs.
+ */
+function PipelinePanel({ item, actions }: { item: WorkItem; actions: FloorActions }): JSX.Element {
+  const [stage, setStage] = useState<StageId | null>(null)
+  const active = stage ? item.pipeline.find((s) => s.id === stage) : null
+
+  // The run whose steps back the Test, Merge and Land stages.
+  const source = item.landRun ?? item.run
+  const nodes = source && stage ? source.blueprint.nodes.filter((n) => n.kind === KIND_OF_STAGE[stage]) : []
+  const steps = source ? source.steps.filter((s) => nodes.some((n) => n.id === s.nodeId)) : []
+  const nameOf = (id: string): string => {
+    const n = source?.blueprint.nodes.find((x) => x.id === id)
+    return n?.label || n?.kind || id
+  }
+
+  return (
+    <section className="pp" aria-label="Pipeline">
+      <PipelineStrip stages={item.pipeline} selected={stage} onSelect={(id) => setStage((cur) => (cur === id ? null : id))} />
+      {!active && <p className="rd-note pp-hint">Click a stage to see what is behind it.</p>}
+      {active && (
+        <div className="pp-detail">
+          <strong>{STAGE_LABEL[active.id]}</strong>
+          <p>{active.note}</p>
+
+          {active.id === 'build' && item.session && (
+            <button type="button" className="btn" onClick={() => actions.openSession(item.session!.sessionId)}>
+              Open the session in Claude Code
+            </button>
+          )}
+          {active.id === 'build' &&
+            item.authorSessions.map((s) => (
+              <button type="button" key={s.sessionId} className="btn pp-btn" onClick={() => actions.openSession(s.sessionId)}>
+                Open “{s.name}” in Claude Code
+              </button>
+            ))}
+
+          {active.id !== 'build' && steps.length === 0 && active.state !== 'skipped' && (
+            <p className="rd-note">Nothing has run for this stage yet.</p>
+          )}
+          {active.id !== 'build' && (
+            <ol className="rd-steps">
+              {steps.map((s, i) => (
+                <li key={i} className={`rd-step rd-step-${s.state}`}>
+                  <div className="rd-step-head pp-step-head">
+                    <span className="rd-glyph">{STEP_GLYPH[s.state] ?? '·'}</span>
+                    <span className="rd-step-name">
+                      {nameOf(s.nodeId)}
+                      {s.attempt > 1 ? ` · attempt ${s.attempt}` : ''}
+                    </span>
+                    <span className="rd-step-meta">
+                      {s.costUsd > 0 ? `${formatUsd(s.costUsd)} ` : ''}
+                      {s.endedAt ? formatDuration(s.endedAt - s.startedAt) : ''}
+                    </span>
+                  </div>
+                  {s.detail && <pre className="rd-out">{s.detail}</pre>}
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -89,19 +170,13 @@ function BranchPanel({
   }, [projectPath, baseBranch, b.branch])
 
   const v = item.verification ?? { state: 'unverified' as const }
+  const landing = item.landRun && item.landRun.status === 'running'
   return (
     <div className="rd">
       <div className="fc-row">
         <VerifyBadge v={v} />
         <span className="fc-meta">last commit {formatAgo(b.lastCommitAt)}</span>
       </div>
-      <p className="rd-note">
-        {v.state === 'verified'
-          ? `A gate passed on this work (${v.by}).`
-          : v.state === 'failed'
-            ? `The gate "${v.by}" failed on this branch. Read the run before landing it.`
-            : 'No gate ever checked this branch. Review it yourself before landing.'}
-      </p>
       <dl className="fl-dl">
         <dt>Branch</dt>
         <dd>
@@ -125,12 +200,14 @@ function BranchPanel({
         <dd>{b.subject}</dd>
       </dl>
       <div className="rd-actions">
-        <button type="button" className="btn btn-primary" onClick={() => actions.land(item)}>
-          Land…
-        </button>
+        {!landing && (
+          <button type="button" className="btn btn-primary" onClick={() => actions.land(item)}>
+            {item.lane === 'needs' ? 'Try landing again…' : 'Land…'}
+          </button>
+        )}
         {item.authors.some((a) => a.endsWith(' run')) && (
           <button type="button" className="btn" onClick={() => onRunOf(b.branch)}>
-            View the run
+            View the run that built it
           </button>
         )}
       </div>

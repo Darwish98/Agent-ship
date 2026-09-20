@@ -144,8 +144,8 @@ describe('budget ceiling', () => {
   })
 
   it('multiplies fan-out interiors', () => {
-    // 3 contenders x 300k (the only agent).
-    expect(budgetCeiling(fromPattern(PATTERNS[3]))).toBe(900_000)
+    // 3 contenders x 300k, plus the Merge step's conflict resolver (300k, runs once).
+    expect(budgetCeiling(fromPattern(PATTERNS[3]))).toBe(900_000 + 300_000)
   })
 
   it('multiplies a gate retry loop over the loop body only', () => {
@@ -179,15 +179,17 @@ describe('node output references', () => {
 })
 
 describe('shipped prompts', () => {
-  it('renders the merge brief with the branches and no leftover placeholders', () => {
+  it('renders the conflict-resolver brief with the branch and files and no leftover placeholders', () => {
     const node = PATTERNS[1].nodes.find((n) => n.kind === 'merge')
     if (node?.kind !== 'merge') throw new Error('no merge node')
     const text = renderTemplate(node.config.resolverPrompt, {
+      branch: 'feat/a',
       baseBranch: 'main',
-      branches: '  - feat/a\n  - feat/b'
+      conflicts: '  - src/a.ts\n  - src/b.ts'
     })
-    expect(text).toContain('Land these branches on "main"')
-    expect(text).toContain('  - feat/a\n  - feat/b')
+    expect(text).toContain('merge of "feat/a" into "main"')
+    expect(text).toContain('  - src/a.ts\n  - src/b.ts')
+    expect(text).toMatch(/Do NOT commit/)
     expect(text).not.toMatch(/\{\{/)
   })
 

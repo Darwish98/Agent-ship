@@ -5,11 +5,11 @@ import {
   openSession,
   resumeSession,
   spawnAgent,
-  spawnMergeOrchestrator,
   stopAgent
 } from './agents'
 import { ClaudeCodeAdapter } from './engine/adapter'
-import { diffSummary } from './engine/gitops'
+import { detectTestCommand, diffSummary, isClean, refExists, worktreeHolding } from './engine/gitops'
+import { buildLandBlueprint, LAND_FLOW } from '../shared/patterns'
 import { RunEngine, worktreeRootFor } from './engine/runner'
 import { RunStore } from './engine/store'
 import { deleteFlow, listFlows, loadFlow, peekFlow, saveFlow } from './flows'
@@ -21,6 +21,9 @@ import * as shipyard from './shipyard'
 import { listSessions, weeklyUsage } from './transcripts'
 
 let mainWindow: BrowserWindow | null = null
+
+/** Conservative on purpose: these end up in git commands and run labels. */
+const BRANCH_NAME = /^[A-Za-z0-9._/@#+-]{1,200}$/
 let engine: RunEngine | null = null
 let runStore: RunStore | null = null
 
@@ -173,6 +176,54 @@ function registerIpcHandlers(): void {
       })
     }
   )
+  // Landing: what it would do, then do it. The plan is computed from the repo
+  // itself; the run is a normal engine run of a pipeline built here in the main
+  // process, so nothing the renderer sends can change what steps exist.
+  ipcMain.handle('land:plan', async (_evt, a: { projectId: string; branch: string }) => {
+    const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === a.projectId)
+    if (!project) return { ok: false as const, error: 'Unknown project.' }
+    if (!BRANCH_NAME.test(a.branch) || !(await refExists(project.path, `refs/heads/${a.branch}`))) {
+      return { ok: false as const, error: `The branch "${a.branch}" no longer exists.` }
+    }
+    const git = await gitState(project.path)
+    const baseBranch = git.baseBranch || 'main'
+    const test = detectTestCommand(project.path)
+    const holder = await worktreeHolding(project.path, baseBranch)
+    return {
+      ok: true as const,
+      baseBranch,
+      testCommand: test.command,
+      testSource: test.source,
+      baseCheckedOutAt: holder,
+      baseHasUncommittedChanges: holder ? !(await isClean(holder)) : false
+    }
+  })
+  ipcMain.handle(
+    'runs:land',
+    async (_evt, a: { projectId: string; branch: string; baseBranch: string; testCommand: string; resolveConflicts: boolean }) => {
+      if (!engine) return { ok: false, error: 'The run engine is not ready.' }
+      const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === a.projectId)
+      if (!project) return { ok: false, error: 'Unknown project.' }
+      if (!BRANCH_NAME.test(a.branch) || !BRANCH_NAME.test(a.baseBranch)) return { ok: false, error: 'Invalid branch name.' }
+      if (a.branch === a.baseBranch) return { ok: false, error: 'A branch cannot be landed on itself.' }
+      const test = String(a.testCommand ?? '').trim()
+      if (test.length > 1000 || /[\r\n]/.test(test)) return { ok: false, error: 'The test command must be a single line.' }
+      const blueprint = buildLandBlueprint({
+        branch: a.branch,
+        base: a.baseBranch,
+        testCommand: test,
+        resolveConflicts: Boolean(a.resolveConflicts)
+      })
+      return engine.start({
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        flowSlug: LAND_FLOW,
+        blueprint,
+        inputs: { branch: a.branch }
+      })
+    }
+  )
   ipcMain.handle('runs:cancel', (_evt, runId: string) => engine?.cancel(runId) ?? false)
   ipcMain.handle('runs:decide', (_evt, a: { runId: string; approve: boolean; note: string }) =>
     engine?.decide(a.runId, a.approve, String(a.note ?? '').slice(0, 2_000)) ?? false
@@ -207,11 +258,6 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle('agent:resume', (_evt, a: { sessionId: string; cwd: string; task: string }) =>
     resumeSession(a.sessionId, a.cwd, a.task)
-  )
-  ipcMain.handle(
-    'agent:mergeAll',
-    (_evt, a: { projectPath: string; baseBranch: string; branches: string[] }) =>
-      spawnMergeOrchestrator(a.projectPath, a.baseBranch, a.branches)
   )
 }
 

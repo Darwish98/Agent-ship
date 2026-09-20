@@ -161,7 +161,7 @@ export function RunDetail({ run, onSelectNode, inEditor }: Props): JSX.Element {
             Stop run
           </button>
         )}
-        {!inEditor && (
+        {!inEditor && run.flowSlug !== '__land__' && (
           <button type="button" className="btn" onClick={() => nav.openFlow(run.projectId, run.flowSlug, focus ?? run.currentNodeId)}>
             {trouble ? 'Edit flow' : 'Open in flow'}
           </button>

@@ -1,21 +1,22 @@
-import type { JSX } from 'react'
+import type { JSX, ReactNode, SyntheticEvent } from 'react'
 import type { Verification, WorkItem } from '../../../shared/floor'
-import { formatUsd } from '../../../shared/runs'
+import { isActive } from '../../../shared/runs'
 import { AgentSprite } from '../components/AgentSprite'
 import { badgeFor, formatAgo, formatTokens, truncate } from '../lib/crew'
-import { MiniFlow } from '../runs/MiniFlow'
-import { SpendMeter, STATUS_LABEL } from '../runs/RunDetail'
+import { SpendMeter } from '../runs/RunDetail'
+import { PipelineStrip } from './PipelineStrip'
 
 /** Everything a card can ask the Floor to do. Cards stay dumb; the Floor owns
  *  dialogs and IPC. */
 export interface FloorActions {
   select: (id: string) => void
-  approve: (runId: string) => void
   dismiss: (runId: string) => void
   editFlow: (item: WorkItem) => void
   openSession: (sessionId: string) => void
   stopOrRemove: (item: WorkItem) => void
+  /** Opens the "land this branch" dialog. */
   land: (item: WorkItem) => void
+  stopRun: (runId: string) => void
 }
 
 interface CardProps {
@@ -47,14 +48,7 @@ export function VerifyBadge({ v }: { v: Verification }): JSX.Element {
   )
 }
 
-function Shell({
-  item,
-  selected,
-  projectName,
-  actions,
-  kind,
-  children
-}: CardProps & { kind: string; children: React.ReactNode }): JSX.Element {
+function Shell({ item, selected, projectName, actions, kind, children }: CardProps & { kind: string; children: ReactNode }): JSX.Element {
   return (
     <div
       className={`fc fc-${item.kind} fc-lane-${item.lane}${selected ? ' fc-selected' : ''}`}
@@ -75,19 +69,20 @@ function Shell({
         </strong>
         {projectName && <span className="fc-proj">{projectName}</span>}
       </div>
+      {/* The same four-stage story on every card, whatever it is made of. */}
+      <PipelineStrip stages={item.pipeline} compact />
       {children}
     </div>
   )
 }
 
-const stop = (e: React.SyntheticEvent): void => e.stopPropagation()
+const stop = (e: SyntheticEvent): void => e.stopPropagation()
 
 export function RunCard(props: CardProps): JSX.Element {
   const { item, actions } = props
   const run = item.run!
   return (
     <Shell {...props} kind="FLOW">
-      <MiniFlow blueprint={run.blueprint} nodes={run.nodes} currentNodeId={run.currentNodeId} compact />
       <SpendMeter spent={run.spentUsd} ceiling={run.ceilingUsd} />
       {item.reasons.length > 0 ? (
         <p className="fc-reason">{truncate(item.reasons[0], 140)}</p>
@@ -104,9 +99,11 @@ export function RunCard(props: CardProps): JSX.Element {
         )}
         {(run.status === 'failed' || run.status === 'budget' || run.status === 'interrupted') && item.lane === 'needs' && (
           <>
-            <button type="button" className="btn fc-btn" onClick={() => actions.editFlow(item)}>
-              Edit flow
-            </button>
+            {run.flowSlug !== '__land__' && (
+              <button type="button" className="btn fc-btn" onClick={() => actions.editFlow(item)}>
+                Edit flow
+              </button>
+            )}
             <button type="button" className="btn fc-btn" onClick={() => actions.dismiss(run.runId)}>
               Dismiss
             </button>
@@ -127,7 +124,7 @@ export function SessionCard(props: CardProps): JSX.Element {
     <Shell {...props} kind="SESSION">
       <div className="fc-session">
         <div className={`fc-sprite${s.live ? ' is-live' : ''}`}>
-          <AgentSprite agentKey={s.sessionId} role={s.role} isOrchestrator={/orchestrat/i.test(s.name)} size={36} dimmed={!s.live} />
+          <AgentSprite agentKey={s.sessionId} role={s.role} isOrchestrator={/orchestrat/i.test(s.name)} size={30} dimmed={!s.live} />
         </div>
         <div className="fc-session-body">
           <span className="role-chip" style={{ background: badge.color }}>
@@ -156,11 +153,17 @@ export function SessionCard(props: CardProps): JSX.Element {
 export function BranchCard(props: CardProps): JSX.Element {
   const { item, actions } = props
   const b = item.branch!
+  const landing = item.landRun && isActive(item.landRun.status)
+  const failedLanding = item.lane === 'needs' && item.landRun
   return (
     <Shell {...props} kind="BRANCH">
-      <p className="fc-sub fc-subject" title={b.subject}>
-        {truncate(b.subject, 80)}
-      </p>
+      {item.reasons.length > 0 ? (
+        <p className="fc-reason">{truncate(item.reasons[0], 150)}</p>
+      ) : (
+        <p className="fc-sub fc-subject" title={item.subtitle}>
+          {truncate(item.subtitle, 80)}
+        </p>
+      )}
       <div className="fc-row">
         <VerifyBadge v={item.verification ?? { state: 'unverified' }} />
         <span className="fc-meta">
@@ -168,10 +171,26 @@ export function BranchCard(props: CardProps): JSX.Element {
         </span>
       </div>
       {item.authors.length > 0 && <p className="fc-branch">by {truncate(item.authors.join(', '), 50)}</p>}
+      {landing && item.landRun && item.landRun.spentUsd > 0 && <SpendMeter spent={item.landRun.spentUsd} ceiling={item.landRun.ceilingUsd} />}
       <div className="fc-actions" onClick={stop}>
-        <button type="button" className="btn btn-primary fc-btn" onClick={() => actions.land(item)}>
-          Land…
-        </button>
+        {landing ? (
+          <button type="button" className="btn fc-btn" onClick={() => actions.stopRun(item.landRun!.runId)}>
+            Stop landing
+          </button>
+        ) : failedLanding ? (
+          <>
+            <button type="button" className="btn btn-primary fc-btn" onClick={() => actions.land(item)}>
+              Try again…
+            </button>
+            <button type="button" className="btn fc-btn" onClick={() => actions.dismiss(item.landRun!.runId)}>
+              Dismiss
+            </button>
+          </>
+        ) : (
+          <button type="button" className="btn btn-primary fc-btn" onClick={() => actions.land(item)}>
+            Land…
+          </button>
+        )}
       </div>
     </Shell>
   )
@@ -187,5 +206,3 @@ export function WorkCard(props: CardProps): JSX.Element {
       return <BranchCard {...props} />
   }
 }
-
-export { formatUsd, STATUS_LABEL }

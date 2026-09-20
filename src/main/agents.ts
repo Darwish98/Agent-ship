@@ -4,8 +4,6 @@
 import { shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { renderTemplate } from '../shared/blueprint'
-import { MERGE_TRAIN_PATTERN } from '../shared/patterns'
 
 const run = promisify(execFile)
 
@@ -115,33 +113,4 @@ export function spawnAgent(projectPath: string, role: string, task: string): Spa
 export function resumeSession(sessionId: string, cwd: string, task: string): SpawnResult {
   if (!sessionId || !task) return { ok: false, error: 'A session and task are required.' }
   return launch(['--bg', '--resume', sessionId, task], cwd, { AGENT_SHIP_TASK: task })
-}
-
-/**
- * Spawns an agent whose job is to land the listed branches on the base
- * branch, resolving conflicts as it goes. The merging itself is done by a
- * real Claude Code agent in the repo; the brief comes from the shipped
- * "Merge train" blueprint, not from text hard-coded here.
- */
-export function spawnMergeOrchestrator(
-  projectPath: string,
-  baseBranch: string,
-  branches: string[]
-): SpawnResult {
-  if (!projectPath) return { ok: false, error: 'No project path.' }
-  if (!branches.length) return { ok: false, error: 'Nothing to merge.' }
-
-  const node = MERGE_TRAIN_PATTERN.nodes.find((n) => n.kind === 'merge')
-  if (node?.kind !== 'merge') return { ok: false, error: 'The Merge train blueprint is missing its merge node.' }
-
-  const task = renderTemplate(node.config.resolverPrompt, {
-    baseBranch,
-    branches: branches.map((b) => `  - ${b}`).join('\n')
-  })
-
-  return launch(['--bg', '--name', 'Orchestrator', task], projectPath, {
-    AGENT_SHIP_NAME: 'Orchestrator',
-    AGENT_SHIP_ROLE: 'Orchestrator',
-    AGENT_SHIP_TASK: `Merge ${branches.length} branch(es) into ${baseBranch}`
-  })
 }

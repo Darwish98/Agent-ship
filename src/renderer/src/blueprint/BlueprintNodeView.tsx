@@ -17,7 +17,8 @@ const ICON: Record<BlueprintNode['kind'], string> = {
   fanout: '⑂',
   join: '⑃',
   gate: '◇',
-  merge: '⤳'
+  merge: '⤳',
+  land: '⚑'
 }
 
 const TITLE: Record<BlueprintNode['kind'], string> = {
@@ -26,7 +27,8 @@ const TITLE: Record<BlueprintNode['kind'], string> = {
   fanout: 'Fan-out',
   join: 'Join',
   gate: 'Gate',
-  merge: 'Merge'
+  merge: 'Merge',
+  land: 'Land'
 }
 
 function summary(n: BlueprintNode): string {
@@ -42,7 +44,9 @@ function summary(n: BlueprintNode): string {
     case 'gate':
       return n.config.check === 'human' ? 'human approval' : n.config.command || 'no command yet'
     case 'merge':
-      return `into ${n.config.baseBranch}`
+      return `into ${n.config.baseBranch}${n.config.resolveConflicts ? ' · agent on conflict' : ''}`
+    case 'land':
+      return `advances ${n.config.baseBranch}`
   }
 }
 

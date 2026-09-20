@@ -59,6 +59,11 @@ const mergeConfig = z.object({
   resolverPrompt: z.string().max(20_000).default('')
 })
 
+const landConfig = z.object({
+  /** The branch that is advanced to the tested merge result. */
+  baseBranch: z.string().max(200).default('main')
+})
+
 const nodeBase = {
   id: z.string().min(1).max(64),
   label: z.string().max(80).default(''),
@@ -72,7 +77,8 @@ export const nodeSchema = z.discriminatedUnion('kind', [
   z.object({ ...nodeBase, kind: z.literal('fanout'), config: fanoutConfig }),
   z.object({ ...nodeBase, kind: z.literal('join'), config: joinConfig }),
   z.object({ ...nodeBase, kind: z.literal('gate'), config: gateConfig }),
-  z.object({ ...nodeBase, kind: z.literal('merge'), config: mergeConfig })
+  z.object({ ...nodeBase, kind: z.literal('merge'), config: mergeConfig }),
+  z.object({ ...nodeBase, kind: z.literal('land'), config: landConfig })
 ])
 
 export const edgeSchema = z.object({

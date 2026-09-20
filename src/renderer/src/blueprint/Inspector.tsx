@@ -246,6 +246,9 @@ function NodeFields({ node, onNode }: { node: BlueprintNode; onNode: Props['onNo
       const c = node.config
       return (
         <>
+          <p className="insp-note">
+            Merges the run&apos;s branch into the base in a <b>scratch copy</b>. Your checkout is not touched. Later gates test the merged result.
+          </p>
           <Field label="Base branch">
             <input
               value={c.baseBranch}
@@ -258,13 +261,29 @@ function NodeFields({ node, onNode }: { node: BlueprintNode; onNode: Props['onNo
               checked={c.resolveConflicts}
               onChange={(e) => onNode({ ...node, config: { ...c, resolveConflicts: e.target.checked } }, key('rc'))}
             />
-            An agent resolves conflicts
+            An agent resolves conflicts (only if there are any)
           </label>
-          <Field label="Resolver brief">
+          <Field label="Resolver brief" hint="Variables: {{branch}} {{baseBranch}} {{conflicts}}. Empty uses the default.">
             <textarea
               rows={7}
               value={c.resolverPrompt}
               onChange={(e) => onNode({ ...node, config: { ...c, resolverPrompt: e.target.value } }, key('rp'))}
+            />
+          </Field>
+        </>
+      )
+    }
+    case 'land': {
+      const c = node.config
+      return (
+        <>
+          <p className="insp-note">
+            Moves the base branch to the merged result, only after everything before it passed. If the base moved in the meantime it is left alone.
+          </p>
+          <Field label="Base branch">
+            <input
+              value={c.baseBranch}
+              onChange={(e) => onNode({ ...node, config: { ...c, baseBranch: e.target.value } }, key('base'))}
             />
           </Field>
         </>

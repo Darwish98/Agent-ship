@@ -94,3 +94,20 @@ How it differs from the concept above:
 Not built, in priority order: an OS notification when something enters **Needs you**; keyboard triage (j/k/enter); search across projects; per-session cost for ad-hoc work; a "Land all verified" action; and replay of a finished run.
 
 Found during the build: the CLI's per-session `status` for ad-hoc sessions has only been observed as `idle`/`busy`, so "waiting for input" on ad-hoc sessions is wired but has not been seen to fire. Flow runs do not have this limit because the engine owns their state.
+
+## 7. A pipeline inside every task (added after first use)
+
+The first version showed *sessions*, *runs* and *branches* as three unrelated kinds of card, and "Land" was one button that started a background agent. In use, that hid the thing that matters: **one piece of work goes through several stages, often in different sessions.** So every card now carries the same four-stage pipeline:
+
+| Stage | Where the state comes from |
+|---|---|
+| **Build** | the session or flow run that made the work |
+| **Test** | a gate: in the run that built it, or in the landing run |
+| **Merge** | the landing run's merge step (in a scratch copy of the base) |
+| **Land** | the landing run's last step: the base branch actually moves |
+
+- The strip is identical on session, flow-run and branch cards, so the board reads as one pipeline with tasks at different points, not three card types.
+- **One task, one card,** even when it is really several sessions: the author session, its gate and the landing run are joined by branch. A landing run lights the Merge and Land stages of *its branch's* card instead of appearing as a separate card.
+- **Click a stage** to see what is behind it: the real steps with their output, cost and attempts, or a button that opens the real Claude Code session that built it.
+- A stage that is not part of a flow shows dashed ("skipped"), and a task nobody has tested says so ("unverified, landing tests it first") instead of looking finished.
+- Stages reflect steps that have *run*: a Test stage with a before-merge and an after-merge gate reads passed after the first and lights red only if the second fails.

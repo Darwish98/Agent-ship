@@ -40,6 +40,18 @@ fs.writeFileSync(path.join(project, 'README.md'), 'demo\n')
 git('add', '-A')
 git('commit', '-q', '-m', 'init')
 
+// A second repository that only shows up because a session ran in it: the
+// case that used to leave the Blueprints project dropdown empty.
+const other = path.join(tmp, 'other-project')
+fs.mkdirSync(other, { recursive: true })
+const gitOther = (...args) => execFileSync('git', args, { cwd: other, encoding: 'utf8' }).trim()
+gitOther('init', '-q', '-b', 'main')
+gitOther('config', 'user.name', 'smoke')
+gitOther('config', 'user.email', 'smoke@example.com')
+fs.writeFileSync(path.join(other, 'README.md'), 'other\n')
+gitOther('add', '-A')
+gitOther('commit', '-q', '-m', 'init')
+
 fs.writeFileSync(path.join(userData, 'shipyard.json'), JSON.stringify([{ id: 'smoke1', name: 'demo-project', path: project }]))
 
 // A blueprint written by hand (the schema fills in defaults), so the test also
@@ -248,13 +260,55 @@ try {
 
   // Open the branch card's drawer.
   check(await clickText('.fc.fc-lane-ready', 'agentship/'), 'opened the branch details')
-  check(await waitFor(() => evalJs(`(document.querySelector('.fl-drawer')?.textContent ?? '').includes('A gate passed')`)), 'the drawer explains that a gate proved it')
+  check(await waitFor(() => evalJs(`(document.querySelector('.fl-drawer')?.textContent ?? '').includes('tests passed')`)), 'the drawer shows the branch as verified')
   await shot('5-drawer')
+
+  // --- 2b. Pipeline inside every card, and landing it -------------------------------
+  console.log('Landing')
+  const cards = await count('.fc')
+  const withStrip = await count('.fc .pl')
+  check(cards > 0 && cards === withStrip, `every card carries a pipeline strip (${withStrip}/${cards})`)
+  const stageText = await evalJs(`(document.querySelector('.fl-drawer .pp')?.innerText ?? '').replace(/\\s+/g, ' ')`)
+  check(/Build.*Test.*Merge.*Land/.test(stageText), 'the drawer shows the pipeline')
+  check(await clickText('.fl-drawer .pl-stage', 'Test'), 'opened the Test stage')
+  check(await waitFor(() => evalJs(`(document.querySelector('.fl-drawer .pp')?.innerText ?? '').includes('A gate passed')`)), 'the Test stage says what proved it')
+  await evalJs(`document.querySelector('.fl-drawer .btn-primary')?.click()`)
+  check(await waitFor(() => count('.rdlg')), 'Land… opened its dialog')
+  await waitFor(() => count('.rdlg-plan')) // the plan is computed by the main process
+  const landPlan = await evalJs(`document.querySelector('.rdlg-plan')?.innerText ?? ''`)
+  check(/Test the branch/.test(landPlan) && /Merge/.test(landPlan) && /Test the merged result/.test(landPlan) && /only now does/.test(landPlan), 'it lists test, merge, test the merge, then land')
+  check(/left exactly as it is now/.test(landPlan), 'it promises the base branch is untouched if anything fails')
+  // This project has no package.json, so nothing is detected: the user supplies the test.
+  const testCmd = `node -e "process.exit(require('fs').existsSync('built.txt')?0:1)"`
+  await evalJs(`(() => { const i = document.querySelector('.rdlg input:not([type=checkbox])'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(i, ${JSON.stringify(testCmd)}); i.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+  await shot('5b-land-dialog')
+  const mainBefore = git('rev-parse', 'main')
+  check(await clickText('.rdlg .btn-primary', 'Land it'), 'started landing')
+  check(await waitFor(() => count('.fc-lane-running.fc-branch'), 8000) || (await waitFor(() => git('rev-parse', 'main') !== mainBefore, 30000)), 'the branch card moved to Running while it landed')
+  check(await waitFor(() => git('rev-parse', 'main') !== mainBefore, 45000), 'main moved')
+  const landed = git('ls-tree', '-r', '--name-only', 'main')
+  check(landed.includes('built.txt') && landed.includes('fixed.txt'), 'main now contains the branch’s work')
+  check(git('rev-list', '--parents', '-n', '1', 'main').split(' ').length === 3, 'as a real merge commit')
+  check(fs.existsSync(path.join(project, 'built.txt')), 'and the checked-out files updated with it')
+  // The run reports "finished" a moment before its final cleanup removes the scratch copies.
+  check(await waitFor(() => git('worktree', 'list').split('\n').length === 1, 8000), 'the scratch copies are gone')
+  check(await waitFor(() => evalJs(`[...document.querySelectorAll('.fc-lane-done')].some(e => e.textContent.includes('Landed'))`), 20000), 'the finished landing shows in Done as "Landed"')
+  await shot('5c-landed')
 
   // --- 3. Blueprint editor ------------------------------------------------------
   console.log('Blueprint editor')
   check(await clickText('.rail-btn', 'Blueprints'), 'switched to the Blueprints view')
   check(await waitFor(() => count('.bp-library')), 'library is shown')
+  check(await waitFor(() => evalJs(`document.querySelectorAll('.bp-project select option').length >= 1`)), 'the project dropdown is not empty')
+  // A folder that was only discovered from a session is offered, and registered when chosen.
+  await postEvent({ sessionId: 'other-1', agentName: 'wanderer', role: 'Dev', projectPath: other, project: 'other-project', hookEvent: 'PreToolUse', toolName: 'Read' })
+  check(await waitFor(() => evalJs(`[...document.querySelectorAll('.bp-project select option')].some(o => o.textContent.includes('other-project') && o.textContent.includes('not added yet'))`), 10000), 'a discovered project is offered as "not added yet"')
+  await evalJs(`(() => { const s = document.querySelector('.bp-project select'); const o = [...s.options].find(o => o.textContent.includes('other-project')); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, o.value); s.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+  check(await waitFor(() => fs.readFileSync(path.join(userData, 'shipyard.json'), 'utf8').includes('other-project'), 8000), 'choosing it registered the project')
+  check(await waitFor(() => evalJs(`document.querySelector('.bp-project select')?.selectedOptions[0]?.textContent === 'other-project'`), 8000), 'and selected it')
+  // Back to the project the rest of the test uses.
+  await evalJs(`(() => { const s = document.querySelector('.bp-project select'); const o = [...s.options].find(o => o.textContent === 'demo-project'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, o.value); s.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+  await sleep(600)
   await shot('6-library')
   // The library shows at once; its flow list arrives a moment later.
   check(await waitFor(() => clickText('.bp-card-main', 'E2E build')), 'opened the flow that was just run')

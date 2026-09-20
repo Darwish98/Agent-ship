@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { renderTemplate, unrunnableReasons, usdCeiling } from '../../shared/blueprint'
+import { RESOLVER_PROMPT } from '../../shared/patterns'
 import { foldRun, promptVars, type RunEvent } from '../../shared/runs'
 import type { Blueprint, BlueprintNode } from '../../shared/schema'
 import { killTree, type AgentAdapter } from './adapter'
@@ -79,8 +80,17 @@ export class RunEngine {
     }
 
     const needsWorktree = a.blueprint.nodes.some((n) => n.kind === 'agent' && n.config.worktree)
-    if (needsWorktree && !(await git.isRepoWithCommit(a.projectPath))) {
-      return { ok: false, error: `${a.projectName} must be a git repository with at least one commit, because this flow gives an agent its own branch.` }
+    const merging = a.blueprint.nodes.some((n) => n.kind === 'merge' || n.kind === 'land')
+    if ((needsWorktree || merging) && !(await git.isRepoWithCommit(a.projectPath))) {
+      return { ok: false, error: `${a.projectName} must be a git repository with at least one commit, because this flow works on git branches.` }
+    }
+    // A merge needs something to merge: a branch an earlier agent made, or the "branch" input.
+    if (merging && !needsWorktree) {
+      const wanted = (a.inputs.branch ?? '').trim()
+      if (!wanted) return { ok: false, error: 'Merging needs a branch: set the "branch" input.' }
+      if (!(await git.refExists(a.projectPath, `refs/heads/${wanted}`))) {
+        return { ok: false, error: `The branch "${wanted}" does not exist in ${a.projectName}.` }
+      }
     }
 
     const ceilingUsd = usdCeiling(a.blueprint) ?? 0
@@ -148,6 +158,9 @@ export class RunEngine {
     let feedback = ''
     let spent = 0
     let executions = 0
+    // Set by the Merge step: the scratch copy holding the merged result, and
+    // what the base branch pointed at when it was made (so Land can tell if it moved).
+    let integ: { wt: git.Worktree; baseTip: string; sha: string; base: string } | null = null
 
     const finish = (status: Finish, reason: string): void => {
       emit({ type: 'run.finished', at: this.now(), runId, status, reason, branch })
@@ -165,6 +178,18 @@ export class RunEngine {
     try {
       const trigger = bp.nodes.find((n) => n.kind === 'trigger')!
       let node = outEdge(trigger, 'next')
+
+      // A flow that merges an existing branch (no agent of its own making one)
+      // tests that branch in a scratch copy, so your checkout is never touched.
+      const under = (a.inputs.branch ?? '').trim()
+      const merging = bp.nodes.some((n) => n.kind === 'merge' || n.kind === 'land')
+      const ownBranch = bp.nodes.some((n) => n.kind === 'agent' && n.config.worktree)
+      if (merging && !ownBranch && under) {
+        const wt = await git.createDetachedWorktree(a.projectPath, this.deps.worktreeRoot, `${short}-src`, under)
+        worktrees.set('__source', wt)
+        cwd = wt.path
+        branch = under
+      }
 
       while (node) {
         if (live.abort.signal.aborted) return finish('cancelled', 'Stopped by you.')
@@ -312,6 +337,122 @@ export class RunEngine {
           continue
         }
 
+        if (node.kind === 'merge' || node.kind === 'land') {
+          const label = node.label || node.kind
+          const thisId = node.id
+          emit({ type: 'node.started', at: this.now(), runId, nodeId: thisId, attempt, cwd })
+          const failed = (reason: string, cost = 0, tokens = 0): void => {
+            emit({ type: 'node.finished', at: this.now(), runId, nodeId: thisId, attempt, status: 'failed', costUsd: cost, tokens, summary: '', error: reason })
+            finish('failed', reason)
+          }
+          const base = renderTemplate(node.config.baseBranch, promptVars(view(), upstream, { branch: branch ?? '' })).trim()
+          if (!base || !(await git.refExists(a.projectPath, `refs/heads/${base}`))) {
+            return failed(`The base branch "${base || node.config.baseBranch}" does not exist. Nothing was changed.`)
+          }
+
+          if (node.kind === 'merge') {
+            const source = branch ?? ''
+            if (!source) return failed('There is no branch to merge. Nothing was changed.')
+            const baseTip = await git.tip(a.projectPath, `refs/heads/${base}`)
+            const wt = await git.createDetachedWorktree(a.projectPath, this.deps.worktreeRoot, `${short}-merge`, baseTip)
+            worktrees.set('__merge', wt)
+
+            let cost = 0
+            let tokens = 0
+            let summary = ''
+            const m = await git.mergeNoFf(wt.path, source).catch((err: Error) => err)
+            if (m instanceof Error) return failed(`Could not merge ${source} into ${base}: ${m.message}`)
+            if (m.ok) {
+              summary = `Merged ${source} into a scratch copy of ${base} with no conflicts.`
+            } else {
+              const files = m.conflicts
+              if (!node.config.resolveConflicts) {
+                await git.abortMerge(wt.path)
+                return failed(`${source} conflicts with ${base} in: ${files.join(', ')}. Nothing was changed.`)
+              }
+              const remaining = ceilingUsd - spent
+              if (remaining < MIN_STEP_USD) {
+                await git.abortMerge(wt.path)
+                emit({ type: 'node.finished', at: this.now(), runId, nodeId: node.id, attempt, status: 'failed', costUsd: 0, tokens: 0, summary: '', error: 'No budget left to resolve the conflicts.' })
+                return finish('budget', 'The run has no budget left to resolve merge conflicts.')
+              }
+              const prompt = renderTemplate(node.config.resolverPrompt || RESOLVER_PROMPT, {
+                ...promptVars(view(), upstream),
+                branch: source,
+                baseBranch: base,
+                conflicts: files.map((f) => `  - ${f}`).join('\n')
+              })
+              const res = await this.deps.adapter.run({
+                prompt,
+                cwd: wt.path,
+                sessionId: crypto.randomUUID(),
+                resume: false,
+                model: 'default',
+                access: 'edit',
+                // The agent may look and stage; it may not commit, push, or switch branches.
+                tools: ['Bash(git add *)', 'Bash(git status *)', 'Bash(git diff *)', 'Bash(git show *)', 'Bash(git log *)'],
+                maxUsd: Math.min(node.budget?.maxUsd ?? bp.defaultBudget.maxUsd ?? remaining, remaining),
+                jsonSchema: '',
+                env: { AGENT_SHIP_NAME: 'Conflict resolver', AGENT_SHIP_ROLE: 'Merge', AGENT_SHIP_TASK: `Resolve ${files.length} conflict(s): ${source} into ${base}` },
+                timeoutMs: (node.budget?.maxMinutes ?? DEFAULT_AGENT_MINUTES) * 60_000,
+                signal: live.abort.signal
+              })
+              spent += res.costUsd
+              cost = res.costUsd
+              tokens = res.tokens
+              if (res.cancelled) {
+                await git.abortMerge(wt.path)
+                emit({ type: 'node.finished', at: this.now(), runId, nodeId: node.id, attempt, status: 'failed', costUsd: cost, tokens, summary: '', error: 'Cancelled.' })
+                return finish('cancelled', 'Stopped by you.')
+              }
+              if (!res.ok) {
+                await git.abortMerge(wt.path)
+                emit({ type: 'node.finished', at: this.now(), runId, nodeId: node.id, attempt, status: 'failed', costUsd: cost, tokens, summary: '', error: res.error ?? 'The conflict resolver failed.' })
+                return finish(res.budgetExhausted ? 'budget' : 'failed', res.budgetExhausted ? 'The conflict resolver hit its dollar limit. Nothing was changed.' : `The conflict resolver failed: ${res.error ?? 'unknown error'}. Nothing was changed.`)
+              }
+              // Trust, but verify: nothing may be left unresolved or carry markers.
+              const left = await git.unmergedPaths(wt.path)
+              if (left.length > 0 || (await git.hasConflictMarkers(wt.path))) {
+                await git.abortMerge(wt.path)
+                return failed(`The agent could not fully resolve the conflicts${left.length ? ` (still conflicted: ${left.join(', ')})` : ' (conflict markers remain)'}. Nothing was changed.`, cost, tokens)
+              }
+              try {
+                await git.concludeMerge(wt.path)
+              } catch (err) {
+                await git.abortMerge(wt.path)
+                return failed(`Could not finish the merge: ${(err as Error).message}`, cost, tokens)
+              }
+              summary = `Merged ${source} into a scratch copy of ${base}; an agent resolved ${files.length} conflicted file${files.length === 1 ? '' : 's'}: ${files.join(', ')}.`
+            }
+
+            const sha = await git.head(wt.path)
+            integ = { wt, baseTip, sha, base }
+            cwd = wt.path // later gates test the merged result, not the branch
+            emit({ type: 'node.finished', at: this.now(), runId, nodeId: node.id, attempt, status: 'passed', costUsd: cost, tokens, summary })
+            node = outEdge(node, 'next')
+            continue
+          }
+
+          // land: advance the base branch to the merge result that was tested.
+          if (!integ) return failed('Nothing to land: a Merge step has to run first.')
+          if (integ.base !== base) return failed(`This Land step targets ${base} but the merge was into ${integ.base}.`)
+          const holder = await git.worktreeHolding(a.projectPath, base)
+          if (holder) {
+            // The branch is checked out somewhere, so it has to move together with its files.
+            if (!(await git.isClean(holder))) {
+              return failed(`${base} is checked out in ${holder} and has uncommitted changes. Commit or stash them, then land again. Nothing was changed.`)
+            }
+            if (!(await git.fastForward(holder, integ.sha))) {
+              return failed(`${base} moved while this was landing, so it was left alone. Run it again.`)
+            }
+          } else if (!(await git.updateBranch(a.projectPath, base, integ.sha, integ.baseTip))) {
+            return failed(`${base} moved while this was landing, so it was left alone. Run it again.`)
+          }
+          emit({ type: 'node.finished', at: this.now(), runId, nodeId: node.id, attempt, status: 'passed', costUsd: 0, tokens: 0, summary: `${label}: ${base} is now at ${integ.sha.slice(0, 7)}.` })
+          node = outEdge(node, 'next')
+          continue
+        }
+
         return finish('failed', `The engine cannot run "${node.kind}" nodes.`)
       }
 
@@ -322,7 +463,8 @@ export class RunEngine {
       // Branches stay; only the scratch directories go.
       for (const wt of worktrees.values()) {
         try {
-          await git.commitAll(wt.path, 'agentship: work in progress at end of run').catch(() => false)
+          // Only branches an agent made keep their work; scratch copies just go.
+          if (!wt.detached) await git.commitAll(wt.path, 'agentship: work in progress at end of run').catch(() => false)
         } finally {
           await git.removeWorktree(a.projectPath, wt)
         }

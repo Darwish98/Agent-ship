@@ -1,7 +1,6 @@
-// Shipped blueprints. The first two are the behaviours the app used to have
-// hard-coded ("Brief the orchestrator", "Collect & merge") re-expressed as
-// data: agents.ts now reads its prompts from here, so the model has to be
-// expressive enough to carry what the product already did.
+// Shipped blueprints. "Supervisor" and "Land a branch" are the two behaviours
+// the app once hard-coded (a fixed orchestrator card and a merge agent),
+// re-expressed as data the engine runs.
 import { SCHEMA_VERSION } from './blueprint'
 import type { Blueprint, BlueprintEdge, BlueprintNode } from './schema'
 
@@ -67,47 +66,90 @@ const SUPERVISOR: Blueprint = {
   edges: [edge('start', 'orchestrator', 'control')]
 }
 
-const MERGE_PROMPT = [
-  'You are the merge orchestrator for this repository.',
+/** Brief for the agent that resolves conflicts. It only runs when a merge
+ *  actually conflicts; a clean merge never calls an agent. */
+export const RESOLVER_PROMPT = [
+  'A git merge of "{{branch}}" into "{{baseBranch}}" stopped with conflicts.',
+  'You are in a scratch copy of the repository with the merge in progress.',
   '',
-  'Land these branches on "{{baseBranch}}", one at a time, oldest first:',
-  '{{branches}}',
+  'Conflicted files:',
+  '{{conflicts}}',
   '',
-  'For each branch:',
-  '1. git checkout {{baseBranch}} && git merge <branch>',
-  '2. If there are conflicts, read both sides and resolve them so the',
-  '   intent of BOTH changes survives. Never resolve by blindly taking one',
-  "   side, and never delete another agent's work to make a conflict go away.",
-  '3. If the repo has tests or a typecheck/build script, run it after each',
-  '   merge and fix anything the merge broke before moving on.',
-  '4. Commit the merge with a message naming the branch you landed.',
-  '',
-  'Do not force-push, do not rebase shared history, and do not delete',
-  'branches. If a branch is too conflicted to land safely, stop, leave it',
-  'unmerged, and report why.'
+  'Resolve every conflict so the intent of BOTH sides survives. Never resolve by',
+  "blindly taking one side, and never delete another change's work to make a",
+  'conflict go away. Remove all conflict markers, then `git add` the resolved files.',
+  'Do NOT commit, push, rebase, or switch branches; the caller finishes the merge.',
+  'If a file cannot be resolved safely, leave it conflicted and say why.'
 ].join('\n')
 
-const MERGE_TRAIN: Blueprint = {
-  schemaVersion: SCHEMA_VERSION,
-  name: 'Merge train',
-  description: 'Lands every unmerged agent branch on the base branch, resolving conflicts as it goes.',
-  version: 1,
-  defaultBudget: {},
-  inputs: [
-    { name: 'baseBranch', label: 'Base branch', required: true },
-    { name: 'branches', label: 'Branches to land', required: true }
-  ],
-  nodes: [
-    trigger(),
-    {
-      id: 'merge',
-      kind: 'merge',
-      label: 'Orchestrator',
-      position: at(1),
-      config: { baseBranch: '{{baseBranch}}', resolveConflicts: true, resolverPrompt: MERGE_PROMPT }
-    }
-  ],
-  edges: [edge('start', 'merge', 'branch')]
+export const LAND_FLOW = '__land__'
+
+export interface LandOptions {
+  branch: string
+  base: string
+  /** Empty means "no tests": the Test steps are left out and the result is unverified. */
+  testCommand: string
+  resolveConflicts: boolean
+  /** Dollars the conflict resolver may spend (only used if it is needed). */
+  maxUsd?: number
+}
+
+const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+/**
+ * The pipeline that lands a finished branch: test it, merge it into the base
+ * in a scratch copy, test the merged result, and only then advance the base.
+ * Nothing touches your checkout until the last step, and a failure at any
+ * step leaves the base branch exactly as it was.
+ */
+export function buildLandBlueprint(o: LandOptions): Blueprint {
+  const nodes: BlueprintNode[] = [trigger()]
+  const edges: BlueprintEdge[] = []
+  let prev = 'start'
+  let col = 1
+  const add = (node: BlueprintNode, type: BlueprintEdge['type'] = 'branch'): void => {
+    nodes.push(node)
+    edges.push(edge(prev, node.id, type))
+    prev = node.id
+  }
+  const tests = o.testCommand.trim()
+  const gate = (id: string, label: string): BlueprintNode => ({
+    id,
+    kind: 'gate',
+    label,
+    position: at(col++),
+    budget: { maxMinutes: 15 },
+    config: { check: 'command', command: tests, instructions: '' }
+  })
+
+  if (tests) add(gate('test', 'Test the branch'))
+  add({
+    id: 'merge',
+    kind: 'merge',
+    label: `Merge into ${clip(o.base, 24)}`,
+    position: at(col++),
+    budget: o.resolveConflicts ? { maxUsd: o.maxUsd ?? 1 } : undefined,
+    config: { baseBranch: o.base, resolveConflicts: o.resolveConflicts, resolverPrompt: RESOLVER_PROMPT }
+  })
+  if (tests) add(gate('verify', 'Test the merged result'))
+  add({ id: 'land', kind: 'land', label: `Land on ${clip(o.base, 24)}`, position: at(col++), config: { baseBranch: o.base } })
+
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    name: `Land ${clip(o.branch, 48)}`,
+    description: 'Tests a branch, merges it in a scratch copy, tests the result, then advances the base branch.',
+    version: 1,
+    defaultBudget: { maxUsd: o.maxUsd ?? 1 },
+    inputs: [{ name: 'branch', label: 'Branch to land', required: true }],
+    nodes,
+    edges
+  }
+}
+
+const LAND_PATTERN: Blueprint = {
+  ...buildLandBlueprint({ branch: '<branch>', base: 'main', testCommand: 'npm test', resolveConflicts: true }),
+  name: 'Land a branch',
+  description: 'Test a branch, merge it into main in a scratch copy, test the result, then advance main. Set the branch as the run input.'
 }
 
 // --- patterns that exercise the rest of the model --------------------------
@@ -204,9 +246,8 @@ const TOURNAMENT: Blueprint = {
   ]
 }
 
-export const PATTERNS: readonly Blueprint[] = [SUPERVISOR, MERGE_TRAIN, PIPELINE, TOURNAMENT]
+export const PATTERNS: readonly Blueprint[] = [SUPERVISOR, LAND_PATTERN, PIPELINE, TOURNAMENT]
 
-export const MERGE_TRAIN_PATTERN = MERGE_TRAIN
 
 /** A fresh copy the user can edit without touching the shipped one. */
 export function fromPattern(pattern: Blueprint): Blueprint {

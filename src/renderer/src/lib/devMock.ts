@@ -10,7 +10,7 @@ import type {
   Settings
 } from '../../../preload'
 import { slugify, usdCeiling } from '../../../shared/blueprint'
-import { fromPattern, PATTERNS } from '../../../shared/patterns'
+import { buildLandBlueprint, fromPattern, LAND_FLOW, PATTERNS } from '../../../shared/patterns'
 import type { RunEvent } from '../../../shared/runs'
 import { parseBlueprint, type Blueprint } from '../../../shared/schema'
 
@@ -163,6 +163,31 @@ export function installDevMock(): void {
   let runSeq = 0
   const newRunId = (): string => `00000000-0000-4000-8000-${String(++runSeq).padStart(12, '0')}`
 
+  // A landing that walks its steps and then stops in a conflict, so the failure state can be seen.
+  const simulateLand = (project: Project, bp: Blueprint, branch: string): string => {
+    const runId = newRunId()
+    pushRun({ type: 'run.started', at: Date.now(), runId, projectId: project.id, projectName: project.name, projectPath: project.path, flowSlug: LAND_FLOW, blueprint: bp, inputs: { branch }, ceilingUsd: usdCeiling(bp) ?? 0 })
+    const ids = bp.nodes.filter((n) => n.kind !== 'trigger').map((n) => n.id)
+    let i = 0
+    const step = (): void => {
+      const id = ids[i]
+      if (!id) {
+        pushRun({ type: 'run.finished', at: Date.now(), runId, status: 'passed', reason: 'Finished every step.', branch })
+        return
+      }
+      const n = bp.nodes.find((x) => x.id === id)!
+      pushRun({ type: 'node.started', at: Date.now(), runId, nodeId: id, attempt: 1, cwd: '/w' })
+      setTimeout(() => {
+        if (n.kind === 'gate') pushRun({ type: 'gate.result', at: Date.now(), runId, nodeId: id, attempt: 1, pass: true, by: 'command', detail: 'exit 0\n24 passed' })
+        else pushRun({ type: 'node.finished', at: Date.now(), runId, nodeId: id, attempt: 1, status: 'passed', costUsd: 0, tokens: 0, summary: n.kind === 'merge' ? `Merged ${branch} into a scratch copy of main with no conflicts.` : 'main is now at 4f2a9c1.' })
+        i++
+        step()
+      }, 1800)
+    }
+    step()
+    return runId
+  }
+
   const simulateRun = (project: Project, slug: string, bp: Blueprint, inputs: Record<string, string>, hold = false): string => {
     const runId = newRunId()
     const t0 = Date.now()
@@ -243,6 +268,18 @@ export function installDevMock(): void {
       return []
     },
     branchSummary: async () => ({ files: 7, added: 212, removed: 34 }),
+    landPlan: async () => ({
+      ok: true,
+      baseBranch: 'main',
+      testCommand: 'npm test',
+      testSource: 'package.json "test" script',
+      baseCheckedOutAt: 'C:/dev/frontend-app',
+      baseHasUncommittedChanges: false
+    }),
+    landBranch: async (projectId, branch, base, testCommand, resolveConflicts) => {
+      const project = projects.find((x) => x.id === projectId)!
+      return { ok: true, runId: simulateLand(project, buildLandBlueprint({ branch, base, testCommand, resolveConflicts }), branch) }
+    },
     addProjectPath: async () => projects,
     listFlows: async (projectId) =>
       [...flowStore]
@@ -297,8 +334,7 @@ export function installDevMock(): void {
       return '(dev mock: no log file)'
     },
     spawnAgent: async () => ({ ok: true }),
-    resumeSession: async () => ({ ok: true }),
-    mergeAll: async () => ({ ok: true })
+    resumeSession: async () => ({ ok: true })
   }
 
   window.agentShip = api

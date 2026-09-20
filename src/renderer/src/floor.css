@@ -332,6 +332,7 @@
   flex-direction: column;
   gap: 7px;
   min-width: 0;
+  overflow: hidden;
   padding: 10px 11px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1094,4 +1095,202 @@ button.mf-pill {
 .bp-run-awaiting {
   border-color: var(--warn);
   background: #f8efd9;
+}
+
+/* --- pipeline inside every task ----------------------------------------- */
+
+.pl {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+}
+
+.pl-item {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pl-item:first-child {
+  flex: 0 1 auto;
+}
+
+.pl-link {
+  flex: 1 1 auto;
+  min-width: 2px;
+  height: 2px;
+  margin: 0 2px;
+  background: var(--border-strong);
+  border-radius: 1px;
+}
+
+.pl-link-on {
+  background: var(--ok);
+}
+
+.pl-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 2px 8px 2px 3px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1.5px solid var(--border-strong);
+  border-radius: 999px;
+}
+
+button.pl-stage {
+  cursor: pointer;
+}
+
+.pl-compact .pl-stage {
+  gap: 3px;
+  padding: 1px 5px 1px 2px;
+  font-size: 10px;
+}
+
+.pl-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pl-dot {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--border-strong);
+  border-radius: 50%;
+}
+
+.pl-compact .pl-dot {
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
+}
+
+.pl-passed {
+  color: var(--text);
+  border-color: var(--ok);
+}
+
+.pl-passed .pl-dot {
+  background: var(--ok);
+}
+
+.pl-running {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.pl-running .pl-dot {
+  background: var(--accent);
+  animation: fl-pulse 1.1s ease-in-out infinite;
+}
+
+.pl-failed {
+  color: var(--text);
+  border-color: var(--low);
+  background: #f6dcd4;
+}
+
+.pl-failed .pl-dot {
+  background: var(--low);
+}
+
+.pl-awaiting {
+  color: var(--text);
+  border-color: var(--warn);
+  background: #f8efd9;
+}
+
+.pl-awaiting .pl-dot {
+  background: var(--warn);
+}
+
+.pl-skipped {
+  opacity: 0.55;
+  border-style: dashed;
+}
+
+.pl-selected {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+/* drawer: what is behind a stage */
+
+.pp {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 14px 4px;
+  padding: 10px 11px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+}
+
+.pp-hint {
+  margin: 0;
+}
+
+.pp-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.pp-detail p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pp-btn {
+  align-self: flex-start;
+}
+
+.pp-step-head {
+  cursor: default;
+}
+
+.fl-h-pad {
+  padding: 0 14px;
+}
+
+/* land dialog */
+
+.ld-steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.ld-hint {
+  margin: -6px 0 10px;
+}
+
+.ld-check {
+  margin: 4px 0 12px;
 }

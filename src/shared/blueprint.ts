@@ -13,7 +13,7 @@ export interface Problem {
 }
 
 /** Placeholders the engine fills in itself, in addition to declared inputs. */
-export const BUILTIN_VARS = ['upstream', 'item', 'branch', 'branches', 'baseBranch'] as const
+export const BUILTIN_VARS = ['upstream', 'item', 'branch', 'branches', 'baseBranch', 'conflicts'] as const
 
 /** `{{name}}` or a reference into another node, `{{node-id.result}}`. */
 const VAR_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g
@@ -220,6 +220,16 @@ export function validateBlueprint(bp: Blueprint): Problem[] {
         }
         break
       }
+      case 'land': {
+        if (!n.config.baseBranch.trim()) add('error', `Land "${nameOf(n)}" has no base branch.`, n.id)
+        if (!incoming(n.id).length && triggers.length) {
+          add('error', `Land "${nameOf(n)}" has no incoming edge.`, n.id)
+        }
+        if (!bp.nodes.some((m) => m.kind === 'merge')) {
+          add('error', `Land "${nameOf(n)}" needs a Merge step before it: it lands the merged, tested result.`, n.id)
+        }
+        break
+      }
       case 'trigger':
         break
     }
@@ -283,7 +293,9 @@ function ceiling(bp: Blueprint, capOf: (n: BlueprintNode) => number | undefined)
   const multiplier = executionMultipliers(bp)
   let total = 0
   for (const n of bp.nodes) {
-    if (n.kind !== 'agent') continue
+    // A merge step that may call an agent to resolve conflicts spends like one.
+    const spends = n.kind === 'agent' || (n.kind === 'merge' && n.config.resolveConflicts)
+    if (!spends) continue
     const cap = capOf(n)
     if (!cap) return null
     total += cap * (multiplier.get(n.id) ?? 1)
@@ -317,11 +329,9 @@ export function unrunnableReasons(bp: Blueprint): string[] {
   const reasons: string[] = []
   if (hasErrors(validateBlueprint(bp))) reasons.push('Fix the errors in the Problems panel first.')
 
-  const unsupported = new Set(
-    bp.nodes.filter((n) => n.kind === 'fanout' || n.kind === 'join' || n.kind === 'merge').map((n) => n.kind)
-  )
+  const unsupported = new Set(bp.nodes.filter((n) => n.kind === 'fanout' || n.kind === 'join').map((n) => n.kind))
   for (const kind of unsupported) {
-    reasons.push(`The run engine cannot execute ${kind} nodes yet (parallel and merge steps are the next phase).`)
+    reasons.push(`The run engine cannot execute ${kind} nodes yet (parallel steps are the next phase).`)
   }
 
   // A run is a walk along a chain: each node continues to at most one next
@@ -370,7 +380,8 @@ export const NODE_KINDS: readonly { kind: NodeKind; title: string; blurb: string
   { kind: 'fanout', title: 'Fan-out', blurb: 'Run N copies in parallel' },
   { kind: 'join', title: 'Join', blurb: 'Collect the parallel results' },
   { kind: 'gate', title: 'Gate', blurb: 'Block until a check passes' },
-  { kind: 'merge', title: 'Merge', blurb: 'Land branches on the base' }
+  { kind: 'merge', title: 'Merge', blurb: 'Merge a branch into the base, in a scratch copy' },
+  { kind: 'land', title: 'Land', blurb: 'Advance the base to the tested merge' }
 ]
 
 /** A new node with sensible defaults, ready to drop on the canvas. */
@@ -413,6 +424,8 @@ export function makeNode(kind: NodeKind, id: string, position: { x: number; y: n
         label: 'Merge',
         config: { baseBranch: 'main', resolveConflicts: true, resolverPrompt: '' }
       }
+    case 'land':
+      return { ...base, kind, label: 'Land', config: { baseBranch: 'main' } }
   }
 }
 
@@ -448,6 +461,8 @@ export function flowLevels(bp: Blueprint): BlueprintNode[][] {
 }
 
 export interface RunSummary {
+  merges: { label: string; base: string; agentOnConflict: boolean }[]
+  lands: { label: string; base: string }[]
   agents: { label: string; model: string; edits: boolean; ownBranch: boolean; tools: string[] }[]
   commands: { label: string; command: string }[]
   humanGates: string[]
@@ -457,7 +472,7 @@ export interface RunSummary {
 /** What pressing Run would actually do, in plain terms. A blueprint is code
  *  that spends money and changes repos, so this is shown before it starts. */
 export function summarizeRun(bp: Blueprint): RunSummary {
-  const summary: RunSummary = { agents: [], commands: [], humanGates: [], ceilingUsd: usdCeiling(bp) }
+  const summary: RunSummary = { merges: [], lands: [], agents: [], commands: [], humanGates: [], ceilingUsd: usdCeiling(bp) }
   for (const n of bp.nodes) {
     if (n.kind === 'agent') {
       summary.agents.push({
@@ -467,6 +482,10 @@ export function summarizeRun(bp: Blueprint): RunSummary {
         ownBranch: n.config.worktree,
         tools: n.config.tools
       })
+    } else if (n.kind === 'merge') {
+      summary.merges.push({ label: n.label || 'Merge', base: n.config.baseBranch, agentOnConflict: n.config.resolveConflicts })
+    } else if (n.kind === 'land') {
+      summary.lands.push({ label: n.label || 'Land', base: n.config.baseBranch })
     } else if (n.kind === 'gate') {
       if (n.config.check === 'command') summary.commands.push({ label: n.label || 'Gate', command: n.config.command })
       else summary.humanGates.push(n.label || 'Gate')

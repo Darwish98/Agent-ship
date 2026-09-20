@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type JSX } from 'react'
 import { BlueprintEditor } from './blueprint/BlueprintEditor'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Floor } from './floor/Floor'
+import { WorldProvider } from './hooks/world'
 import { NavContext, type FlowFocus, type Mode, type Nav } from './nav'
 import { RunDialog, type RunTarget } from './runs/RunDialog'
 import { RunsProvider, useRuns } from './runs/RunsProvider'
@@ -17,7 +18,9 @@ const MODES: { id: Mode; label: string; icon: string }[] = [
 export function Shell(): JSX.Element {
   return (
     <RunsProvider>
-      <ShellInner />
+      <WorldProvider>
+        <ShellInner />
+      </WorldProvider>
     </RunsProvider>
   )
 }

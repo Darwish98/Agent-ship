@@ -13,11 +13,12 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type JSX } from 'react'
-import type { FlowSummary, Project } from '../../../preload'
+import type { FlowSummary } from '../../../preload'
 import { hasErrors, makeNode, newId, NODE_KINDS, slugify, unrunnableReasons, validateBlueprint } from '../../../shared/blueprint'
 import { formatUsd, isActive } from '../../../shared/runs'
 import { emptyBlueprint, fromPattern, PATTERNS } from '../../../shared/patterns'
 import type { Blueprint, BlueprintEdge, BlueprintNode, NodeKind } from '../../../shared/schema'
+import { useWorld } from '../hooks/world'
 import { useNav } from '../nav'
 import { RunDetail, SpendMeter, STATUS_LABEL } from '../runs/RunDetail'
 import { useRuns } from '../runs/RunsProvider'
@@ -37,8 +38,8 @@ const SAVE_LABEL = {
   conflict: 'Changed on disk'
 } as const
 
-/** Parallel and merge steps can be drawn but the engine cannot run them yet. */
-const DESIGN_ONLY = new Set<NodeKind>(['fanout', 'join', 'merge'])
+/** Parallel steps can be drawn but the engine cannot run them yet. */
+const DESIGN_ONLY = new Set<NodeKind>(['fanout', 'join'])
 
 function edgeType(from: BlueprintNode, taken: BlueprintEdge[]): Pick<BlueprintEdge, 'type' | 'condition'> {
   if (from.kind === 'trigger') return { type: 'control', condition: 'always' }
@@ -51,7 +52,8 @@ function edgeType(from: BlueprintNode, taken: BlueprintEdge[]): Pick<BlueprintEd
 }
 
 export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
-  const [projects, setProjects] = useState<Project[]>([])
+  const world = useWorld()
+  const projects = world.projects
   const [projectId, setProjectId] = useState('')
   const [flows, setFlows] = useState<FlowSummary[]>([])
   const [loadError, setLoadError] = useState('')
@@ -69,14 +71,23 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
     setFlows(id ? await window.agentShip.listFlows(id) : [])
   }, [])
 
-  // Projects come from the same registry as the Floor's rooms.
+  // Default to the first registered project; keep the choice while it exists.
   useEffect(() => {
-    if (!active) return
-    void window.agentShip.listProjects().then((list) => {
-      setProjects(list)
-      setProjectId((cur) => (list.some((p) => p.id === cur) ? cur : (list[0]?.id ?? '')))
-    })
-  }, [active])
+    setProjectId((cur) => (projects.some((p) => p.id === cur) ? cur : (projects[0]?.id ?? '')))
+  }, [projects])
+
+  // Everything the Floor shows is offered here too. Folders that were only
+  // discovered from Claude sessions are added to Agent Ship when picked.
+  const options = useMemo(() => {
+    const norm = (s: string): string => s.replace(/[\\/]+/g, '/').toLowerCase()
+    const known = new Set(projects.map((p) => norm(p.path)))
+    return [
+      ...projects.map((p) => ({ value: p.id, label: p.name })),
+      ...world.rooms
+        .filter((r) => r.ephemeral && !known.has(norm(r.path)))
+        .map((r) => ({ value: `path:${r.path}`, label: `${r.name} (not added yet)` }))
+    ]
+  }, [projects, world.rooms])
 
   useEffect(() => {
     void refreshFlows(projectId)
@@ -91,6 +102,24 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
       setProjectId(id)
     },
     [doc]
+  )
+
+  const chooseProject = useCallback(
+    async (value: string) => {
+      setLoadError('')
+      if (!value.startsWith('path:')) return switchProject(value)
+      const dir = value.slice('path:'.length)
+      const norm = (s: string): string => s.replace(/[\\/]+/g, '/').toLowerCase()
+      const list = await window.agentShip.addProjectPath(dir)
+      const added = list.find((p) => norm(p.path) === norm(dir))
+      if (!added) {
+        setLoadError(`"${dir}" is not a git repository, so flows cannot live there. Use "+ Add project" to pick a folder.`)
+        return
+      }
+      await world.refreshProjects()
+      await switchProject(added.id)
+    },
+    [switchProject, world]
   )
 
   const openFlow = useCallback(
@@ -346,11 +375,15 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
   if (!bp) {
     return (
       <Library
-        projects={projects}
+        options={options}
         projectId={projectId}
+        onAddProject={async () => {
+          await window.agentShip.addProject()
+          await world.refreshProjects()
+        }}
         flows={flows}
         error={loadError}
-        onProject={(id) => void switchProject(id)}
+        onProject={(v) => void chooseProject(v)}
         onOpen={(slug) => void openFlow(slug)}
         onDelete={(f) => void removeFlow(f)}
         onCreate={(b) => void createFlow(b)}
@@ -546,8 +579,9 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
 }
 
 interface LibraryProps {
-  projects: Project[]
+  options: { value: string; label: string }[]
   projectId: string
+  onAddProject: () => Promise<void>
   flows: FlowSummary[]
   error: string
   onProject: (id: string) => void
@@ -556,34 +590,42 @@ interface LibraryProps {
   onCreate: (b: Blueprint) => void
 }
 
-function Library({ projects, projectId, flows, error, onProject, onOpen, onDelete, onCreate }: LibraryProps): JSX.Element {
+function Library({ options, projectId, onAddProject, flows, error, onProject, onOpen, onDelete, onCreate }: LibraryProps): JSX.Element {
   return (
     <div className="bp-library">
       <header className="bp-lib-head">
         <div>
           <h1>Blueprints</h1>
           <p>
-            An orchestration is a file in your repo: <code>.agentship/flows/*.flow.json</code>. Design one here. Running
-            them comes with the run engine.
+            An orchestration is a file in your repo: <code>.agentship/flows/*.flow.json</code>. Design one here, then run it
+            from here or from the Floor.
           </p>
         </div>
-        <label className="bp-project">
-          Project
-          <select value={projectId} onChange={(e) => onProject(e.target.value)} disabled={!projects.length}>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="bp-project-row">
+          <label className="bp-project">
+            Project
+            <select value={projectId} onChange={(e) => onProject(e.target.value)} disabled={!options.length}>
+              {!projectId && <option value="">Choose a project…</option>}
+              {options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="btn" onClick={() => void onAddProject()}>
+            + Add project
+          </button>
+        </div>
       </header>
 
       {error && <div className="bp-error">{error}</div>}
 
-      {!projects.length ? (
+      {!projectId ? (
         <div className="bp-empty">
-          Add a project on the Floor first (<strong>+ Add project</strong>). Blueprints live inside a project&apos;s repo.
+          {options.length
+            ? 'Choose a project above. Blueprints are saved inside that project’s repo.'
+            : 'No projects yet. Use “+ Add project” to pick a git repository, or run claude inside one and it will appear here.'}
         </div>
       ) : (
         <>

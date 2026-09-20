@@ -10,6 +10,7 @@ import { useRuns } from '../runs/RunsProvider'
 import type { Room } from '../types'
 import { WorkCard, type FloorActions } from './Cards'
 import { Drawer } from './Drawer'
+import { LandDialog, type LandTarget } from './LandDialog'
 import { useFloorData } from './useFloorData'
 
 const LANE_META: Record<Lane, { title: string; blurb: string; empty: string }> = {
@@ -27,13 +28,14 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
   const data = useFloorData(active)
   const { world, model, rooms, gitByRoom, flowsByRoom, refreshRoom } = data
   const nav = useNav()
-  const { runs, acknowledge } = useRuns()
+  const { runs, acknowledge, cancel } = useRuns()
 
   const [project, setProject] = useState<'all' | string>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [dialog, setDialog] = useState<TaskDialogSpec | null>(null)
   const [showStale, setShowStale] = useState(false)
   const [launchOpen, setLaunchOpen] = useState<string | null>(null)
+  const [landing, setLanding] = useState<LandTarget | null>(null)
 
   const roomById = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms])
   const visible = useCallback((it: WorkItem): boolean => project === 'all' || it.projectId === project, [project])
@@ -51,7 +53,6 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
   const actions = useMemo<FloorActions>(
     () => ({
       select: (id) => setSelectedId((cur) => (cur === id ? null : id)),
-      approve: (id) => setSelectedId(`run:${id}`),
       dismiss: (runId) => acknowledge(runId),
       editFlow: (item) => {
         const run = item.run
@@ -91,31 +92,33 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
           }
         })
       },
-      land: (item) => {
+      stopRun: (runId) => void cancel(runId),
+      land: async (item) => {
         const b = item.branch
         const room = roomById.get(item.projectId)
         if (!b || !room) return
-        const base = gitByRoom.get(room.id)?.baseBranch || 'main'
-        const v = item.verification
-        setDialog({
-          title: `Land ${b.branch}`,
-          subtitle: `${room.name} → ${base}`,
-          warning: [
-            `${b.ahead} commit${b.ahead === 1 ? '' : 's'} will be merged into ${base}.`,
-            v?.state === 'verified'
-              ? `A gate passed on this work (${v.by}).`
-              : v?.state === 'failed'
-                ? `WARNING: the gate "${v.by}" failed on this branch.`
-                : 'No gate has checked this branch.',
-            'A merge agent does it and resolves conflicts. It commits in your real repository.'
-          ],
-          taskField: false,
-          submitLabel: 'Land it',
-          onSubmit: async () => {
-            const r = await window.agentShip.mergeAll(room.path, base, [b.branch])
-            return r.ok ? null : (r.error ?? 'Could not start the merge.')
+        let projectId = room.id
+        // A folder that was only discovered has to be part of Agent Ship before
+        // it can run anything. That needs to be a real git repository.
+        if (room.ephemeral) {
+          const norm = (p: string): string => p.replace(/[\\/]+/g, '/').toLowerCase()
+          const list = await window.agentShip.addProjectPath(room.path)
+          const added = list.find((p) => norm(p.path) === norm(room.path))
+          if (!added) {
+            setDialog({
+              title: 'Cannot land here',
+              subtitle: room.name,
+              warning: [`${room.path} is not a git repository Agent Ship can register.`],
+              taskField: false,
+              submitLabel: 'Close',
+              onSubmit: async () => null
+            })
+            return
           }
-        })
+          await world.refreshProjects()
+          projectId = added.id
+        }
+        setLanding({ projectId, projectName: room.name, branch: b.branch })
       }
     }),
     [acknowledge, nav, roomById, gitByRoom, world]
@@ -363,6 +366,7 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
       </div>
 
       {dialog && <TaskDialog spec={dialog} onClose={() => setDialog(null)} />}
+      {landing && <LandDialog target={landing} onClose={() => setLanding(null)} />}
     </div>
   )
 }

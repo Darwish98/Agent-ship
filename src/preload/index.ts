@@ -83,6 +83,17 @@ export interface BranchInfo {
   subject: string
 }
 
+export type LandPlan =
+  | {
+      ok: true
+      baseBranch: string
+      testCommand: string
+      testSource: string
+      baseCheckedOutAt: string | null
+      baseHasUncommittedChanges: boolean
+    }
+  | { ok: false; error: string }
+
 export type StartRunResult = { ok: true; runId: string } | { ok: false; error: string }
 
 export interface SpawnResult {
@@ -144,6 +155,15 @@ const api = {
   listRuns: (): Promise<{ runId: string; events: RunEvent[] }[]> => ipcRenderer.invoke('runs:list'),
   startRun: (projectId: string, slug: string, inputs: Record<string, string>): Promise<StartRunResult> =>
     ipcRenderer.invoke('runs:start', { projectId, slug, inputs }),
+  landPlan: (projectId: string, branch: string): Promise<LandPlan> => ipcRenderer.invoke('land:plan', { projectId, branch }),
+  landBranch: (
+    projectId: string,
+    branch: string,
+    baseBranch: string,
+    testCommand: string,
+    resolveConflicts: boolean
+  ): Promise<StartRunResult> =>
+    ipcRenderer.invoke('runs:land', { projectId, branch, baseBranch, testCommand, resolveConflicts }),
   cancelRun: (runId: string): Promise<boolean> => ipcRenderer.invoke('runs:cancel', runId),
   decideGate: (runId: string, approve: boolean, note: string): Promise<boolean> =>
     ipcRenderer.invoke('runs:decide', { runId, approve, note }),
@@ -165,9 +185,7 @@ const api = {
   spawnAgent: (projectPath: string, role: string, task: string): Promise<SpawnResult> =>
     ipcRenderer.invoke('agent:spawn', { projectPath, role, task }),
   resumeSession: (sessionId: string, cwd: string, task: string): Promise<SpawnResult> =>
-    ipcRenderer.invoke('agent:resume', { sessionId, cwd, task }),
-  mergeAll: (projectPath: string, baseBranch: string, branches: string[]): Promise<SpawnResult> =>
-    ipcRenderer.invoke('agent:mergeAll', { projectPath, baseBranch, branches })
+    ipcRenderer.invoke('agent:resume', { sessionId, cwd, task })
 }
 
 export type AgentShipApi = typeof api
