@@ -6,10 +6,13 @@ import {
   resumeSession,
   spawnAgent,
   spawnMergeOrchestrator,
-  spawnOrchestrator,
   stopAgent
 } from './agents'
-import { deleteFlow, listFlows, loadFlow, saveFlow } from './flows'
+import { ClaudeCodeAdapter } from './engine/adapter'
+import { diffSummary } from './engine/gitops'
+import { RunEngine, worktreeRootFor } from './engine/runner'
+import { RunStore } from './engine/store'
+import { deleteFlow, listFlows, loadFlow, peekFlow, saveFlow } from './flows'
 import { gitState, unmergedBranches } from './git'
 import { installHooks } from './hooks'
 import { installCrashLogging, log, logPath } from './log'
@@ -18,6 +21,8 @@ import * as shipyard from './shipyard'
 import { listSessions, weeklyUsage } from './transcripts'
 
 let mainWindow: BrowserWindow | null = null
+let engine: RunEngine | null = null
+let runStore: RunStore | null = null
 
 app.setName('Agent Ship')
 installCrashLogging()
@@ -115,6 +120,10 @@ function registerIpcHandlers(): void {
     return shipyard.addProject(userDataDir(), result.filePaths[0])
   })
 
+  ipcMain.handle('shipyard:addPath', (_evt, projectPath: string) =>
+    shipyard.addProjectIfRepo(userDataDir(), String(projectPath))
+  )
+
   ipcMain.handle('shipyard:removeProject', (_evt, id: string) =>
     shipyard.removeProject(userDataDir(), id)
   )
@@ -124,20 +133,52 @@ function registerIpcHandlers(): void {
     shipyard.saveSettings(userDataDir(), patch)
   )
 
-  ipcMain.handle('links:get', () => shipyard.loadLinks(userDataDir()))
-  ipcMain.handle('links:set', (_evt, links: shipyard.OrchestratorLink[]) =>
-    shipyard.saveLinks(userDataDir(), links)
-  )
-
   ipcMain.handle('flows:list', (_evt, projectId: string) => listFlows(userDataDir(), projectId))
   ipcMain.handle('flows:load', (_evt, a: { projectId: string; slug: string }) =>
     loadFlow(userDataDir(), a.projectId, a.slug)
   )
-  ipcMain.handle('flows:save', (_evt, a: { projectId: string; slug: string; blueprint: unknown }) =>
-    saveFlow(userDataDir(), a.projectId, a.slug, a.blueprint)
+  ipcMain.handle(
+    'flows:save',
+    (_evt, a: { projectId: string; slug: string; blueprint: unknown; expected?: string | null }) =>
+      saveFlow(userDataDir(), a.projectId, a.slug, a.blueprint, a.expected)
+  )
+  ipcMain.handle('flows:peek', (_evt, a: { projectId: string; slug: string }) =>
+    peekFlow(userDataDir(), a.projectId, a.slug)
   )
   ipcMain.handle('flows:delete', (_evt, a: { projectId: string; slug: string }) =>
     deleteFlow(userDataDir(), a.projectId, a.slug)
+  )
+
+  // Runs. The renderer names a project and a flow; the engine reads the
+  // blueprint from disk itself, so it only ever executes what is in the repo.
+  ipcMain.handle('runs:list', () => runStore?.list() ?? [])
+  ipcMain.handle(
+    'runs:start',
+    async (_evt, a: { projectId: string; slug: string; inputs: Record<string, string> }) => {
+      if (!engine) return { ok: false, error: 'The run engine is not ready.' }
+      const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === a.projectId)
+      if (!project) return { ok: false, error: 'Unknown project.' }
+      const flow = loadFlow(userDataDir(), a.projectId, a.slug)
+      if (!flow.ok) return { ok: false, error: flow.error }
+      const inputs = Object.fromEntries(
+        Object.entries(a.inputs ?? {}).map(([k, v]) => [k, String(v).slice(0, 20_000)])
+      )
+      return engine.start({
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        flowSlug: a.slug,
+        blueprint: flow.blueprint,
+        inputs
+      })
+    }
+  )
+  ipcMain.handle('runs:cancel', (_evt, runId: string) => engine?.cancel(runId) ?? false)
+  ipcMain.handle('runs:decide', (_evt, a: { runId: string; approve: boolean; note: string }) =>
+    engine?.decide(a.runId, a.approve, String(a.note ?? '').slice(0, 2_000)) ?? false
+  )
+  ipcMain.handle('git:branchSummary', (_evt, a: { cwd: string; base: string; branch: string }) =>
+    diffSummary(a.cwd, a.base, a.branch)
   )
 
   // The renderer's error boundary reports here so a crash leaves a trace.
@@ -167,9 +208,6 @@ function registerIpcHandlers(): void {
   ipcMain.handle('agent:resume', (_evt, a: { sessionId: string; cwd: string; task: string }) =>
     resumeSession(a.sessionId, a.cwd, a.task)
   )
-  ipcMain.handle('agent:orchestrate', (_evt, a: { projectPath: string; brief: string }) =>
-    spawnOrchestrator(a.projectPath, a.brief)
-  )
   ipcMain.handle(
     'agent:mergeAll',
     (_evt, a: { projectPath: string; baseBranch: string; branches: string[] }) =>
@@ -179,6 +217,19 @@ function registerIpcHandlers(): void {
 
 app.whenReady().then(() => {
   ensureHooksInstalled()
+
+  runStore = new RunStore(path.join(userDataDir(), 'runs'))
+  // A run that was mid-flight when the app last closed can never finish.
+  runStore.markInterrupted()
+  engine = new RunEngine({
+    adapter: new ClaudeCodeAdapter(),
+    worktreeRoot: worktreeRootFor(userDataDir()),
+    emit: (event) => {
+      runStore?.append(event)
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('run-event', event)
+    }
+  })
+
   createWindow()
   registerIpcHandlers()
 
@@ -194,6 +245,11 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// Stop in-flight runs so their scratch worktrees are cleaned up rather than orphaned.
+app.on('before-quit', () => {
+  for (const id of engine?.activeRunIds() ?? []) engine?.cancel(id)
 })
 
 app.on('window-all-closed', () => {

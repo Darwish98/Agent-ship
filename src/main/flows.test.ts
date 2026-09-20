@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { emptyBlueprint } from '../shared/patterns'
-import { deleteFlow, listFlows, loadFlow, saveFlow } from './flows'
+import { deleteFlow, listFlows, loadFlow, peekFlow, saveFlow } from './flows'
 
 let userData: string
 let repo: string
@@ -68,6 +68,49 @@ describe('flow store', () => {
     const [entry] = listFlows(userData, PROJECT)
     expect(entry.slug).toBe('bad')
     expect(entry.error).toBeTruthy()
+  })
+
+  describe('external edits (compare-and-swap)', () => {
+    it('accepts a save made against the version on disk, and returns the new hash', () => {
+      const first = saveFlow(userData, PROJECT, 'a', emptyBlueprint('One'), null)
+      if (!first.ok) throw new Error(first.error)
+      const second = saveFlow(userData, PROJECT, 'a', emptyBlueprint('Two'), first.hash)
+      expect(second.ok).toBe(true)
+      expect(peekFlow(userData, PROJECT, 'a')).toBe(second.ok ? second.hash : '')
+    })
+
+    it('refuses to overwrite a file that changed underneath the editor', () => {
+      const first = saveFlow(userData, PROJECT, 'a', emptyBlueprint('Mine'), null)
+      if (!first.ok) throw new Error(first.error)
+      // e.g. `git checkout` brought a different version
+      const theirs = JSON.stringify({ ...emptyBlueprint('Theirs') }, null, 2)
+      fs.writeFileSync(flowFile('a'), theirs)
+      const r = saveFlow(userData, PROJECT, 'a', emptyBlueprint('Mine v2'), first.hash)
+      expect(r.ok).toBe(false)
+      expect(!r.ok && r.conflict).toBe(true)
+      expect(fs.readFileSync(flowFile('a'), 'utf8')).toBe(theirs)
+    })
+
+    it('lets the user deliberately keep their copy', () => {
+      saveFlow(userData, PROJECT, 'a', emptyBlueprint('Mine'), null)
+      fs.writeFileSync(flowFile('a'), '{}')
+      expect(saveFlow(userData, PROJECT, 'a', emptyBlueprint('Mine v2')).ok).toBe(true)
+    })
+
+    it('does not let a new flow silently replace an existing file of the same name', () => {
+      saveFlow(userData, PROJECT, 'a', emptyBlueprint('Existing'), null)
+      const r = saveFlow(userData, PROJECT, 'a', emptyBlueprint('New'), null)
+      expect(!r.ok && r.conflict).toBe(true)
+    })
+
+    it('reports a deleted file as a conflict, and peek as null', () => {
+      const first = saveFlow(userData, PROJECT, 'a', emptyBlueprint(), null)
+      if (!first.ok) throw new Error(first.error)
+      fs.rmSync(flowFile('a'))
+      expect(peekFlow(userData, PROJECT, 'a')).toBeNull()
+      const r = saveFlow(userData, PROJECT, 'a', emptyBlueprint(), first.hash)
+      expect(!r.ok && r.conflict).toBe(true)
+    })
   })
 
   it('deletes only the flow file', () => {

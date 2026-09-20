@@ -6,7 +6,11 @@ import { z } from 'zod'
 import { SCHEMA_VERSION } from './blueprint'
 
 export const budgetSchema = z.object({
+  /** Enforced between steps: a step that ends over this stops the run. */
   maxTokens: z.number().int().positive().optional(),
+  /** Enforced natively (`--max-budget-usd`) per model call. The CLI checks it
+   *  after each call, so a run stops within one call of the cap. */
+  maxUsd: z.number().positive().optional(),
   maxMinutes: z.number().positive().optional(),
   maxRetries: z.number().int().min(0).max(20).optional()
 })
@@ -22,6 +26,9 @@ const agentConfig = z.object({
   prompt: z.string().max(20_000),
   /** Run in its own git worktree/branch. Parallel writers must. */
   worktree: z.boolean().default(false),
+  /** read = may only look. edit = may modify files in its working directory
+   *  (Claude Code's acceptEdits mode). Containment comes from the worktree. */
+  access: z.enum(['read', 'edit']).default('read'),
   /** Tool allow-list. Empty = the session's normal permission behaviour. */
   tools: z.array(z.string().max(120)).max(50).default([]),
   /** JSON Schema (as text) the result must satisfy. Empty = free text. */
@@ -29,7 +36,6 @@ const agentConfig = z.object({
 })
 
 const fanoutConfig = z.object({
-  mode: z.enum(['count', 'list']).default('count'),
   count: z.number().int().min(2).max(16).default(3)
 })
 

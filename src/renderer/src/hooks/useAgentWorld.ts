@@ -238,6 +238,7 @@ export function useAgentWorld(): World {
         agent.live = true
         agent.pid = proc.pid
         agent.kind = proc.kind
+        agent.procStatus = proc.status
         if (!agent.status || agent.status === 'idle') agent.status = 'in session'
       }
     }

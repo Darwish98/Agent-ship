@@ -15,7 +15,12 @@ export interface Problem {
 /** Placeholders the engine fills in itself, in addition to declared inputs. */
 export const BUILTIN_VARS = ['upstream', 'item', 'branch', 'branches', 'baseBranch'] as const
 
-const VAR_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g
+/** `{{name}}` or a reference into another node, `{{node-id.result}}`. */
+const VAR_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g
+
+/** What a node exposes to later prompts. `output.<path>` reads a field of its
+ *  schema-validated output. */
+export const NODE_REF_FIELDS = ['result', 'branch', 'cost'] as const
 
 export function templateVars(template: string): string[] {
   return [...new Set([...template.matchAll(VAR_RE)].map((m) => m[1]))]
@@ -139,6 +144,15 @@ export function validateBlueprint(bp: Blueprint): Problem[] {
   }
 
   const declared = new Set<string>([...bp.inputs.map((i) => i.name), ...BUILTIN_VARS])
+  const isNodeRef = (v: string): boolean => {
+    const dot = v.indexOf('.')
+    if (dot < 0) return false
+    const field = v.slice(dot + 1)
+    return (
+      ids.has(v.slice(0, dot)) &&
+      ((NODE_REF_FIELDS as readonly string[]).includes(field) || field.startsWith('output.'))
+    )
+  }
   const flowHasBudget = Boolean(bp.defaultBudget.maxTokens)
 
   for (const n of bp.nodes) {
@@ -146,15 +160,29 @@ export function validateBlueprint(bp: Blueprint): Problem[] {
       case 'agent': {
         if (!n.config.prompt.trim()) add('error', `"${nameOf(n)}" has no prompt.`, n.id)
         for (const v of templateVars(n.config.prompt)) {
-          if (!declared.has(v)) {
-            add('warning', `"${nameOf(n)}" uses {{${v}}}, which is not a flow input.`, n.id)
+          if (!declared.has(v) && !isNodeRef(v)) {
+            add(
+              'warning',
+              `"${nameOf(n)}" uses {{${v}}}, which is not a flow input or a node's result/branch/cost.`,
+              n.id
+            )
           }
+        }
+        if (n.config.outputSchema.trim()) {
+          try {
+            JSON.parse(n.config.outputSchema)
+          } catch {
+            add('error', `"${nameOf(n)}" has an output schema that is not valid JSON.`, n.id)
+          }
+        }
+        if (n.config.access === 'edit' && !n.config.worktree) {
+          add('warning', `"${nameOf(n)}" can edit files but has no worktree, so it changes your live checkout.`, n.id)
         }
         if (!incoming(n.id).length && n.kind === 'agent' && triggers.length) {
           add('error', `"${nameOf(n)}" has no incoming edge.`, n.id)
         }
-        if (!n.budget?.maxTokens && !flowHasBudget) {
-          add('warning', `"${nameOf(n)}" has no token budget, and the flow has no default.`, n.id)
+        if (!n.budget?.maxUsd && !bp.defaultBudget.maxUsd && !n.budget?.maxTokens && !flowHasBudget) {
+          add('warning', `"${nameOf(n)}" has no budget, and the flow has no default.`, n.id)
         }
         break
       }
@@ -220,23 +248,15 @@ export function validateBlueprint(bp: Blueprint): Problem[] {
 
 export const hasErrors = (problems: Problem[]): boolean => problems.some((p) => p.severity === 'error')
 
-/**
- * Worst-case token ceiling from the budgets on the page, or `null` when some
- * agent has no bound at all (which is itself the finding: an unbounded flow
- * has no ceiling). Fan-out multiplies its interior; a gate's retry cap
- * multiplies the nodes it loops back over.
- *
- * This is a ceiling built from limits the user set, not a prediction of what
- * the flow will actually use. Real estimates need run history (Phase 4).
- */
-export function budgetCeiling(bp: Blueprint): number | null {
+/** How many times each node may execute in the worst case: fan-out
+ *  interiors multiply by their copy count, a gate's retry loop multiplies the
+ *  nodes it loops back over by (1 + retries). */
+function executionMultipliers(bp: Blueprint): Map<string, number> {
   const adj = forwardAdjacency(bp)
   const joins = new Set(bp.nodes.filter((n) => n.kind === 'join').map((n) => n.id))
-  const fallback = bp.defaultBudget.maxTokens
-
   const multiplier = new Map<string, number>(bp.nodes.map((n) => [n.id, 1]))
 
-  for (const f of bp.nodes.filter((n) => n.kind === 'fanout' && n.config.mode === 'count')) {
+  for (const f of bp.nodes) {
     if (f.kind !== 'fanout') continue
     const stop = new Map([...adj].map(([k, v]) => [k, joins.has(k) ? [] : v]))
     for (const id of reachableFrom(adj.get(f.id) ?? [], stop)) {
@@ -250,22 +270,78 @@ export function budgetCeiling(bp: Blueprint): number | null {
     const retries = gate.budget?.maxRetries ?? 0
     // The loop body: everything from the repair target that can still reach
     // the gate (the gate included). Only those re-run on a retry.
-    const fromTarget = reachableFrom([e.to], adj)
-    for (const id of fromTarget) {
+    for (const id of reachableFrom([e.to], adj)) {
       if (reachableFrom([id], adj).has(gate.id)) {
         multiplier.set(id, (multiplier.get(id) ?? 1) * (1 + retries))
       }
     }
   }
+  return multiplier
+}
 
+function ceiling(bp: Blueprint, capOf: (n: BlueprintNode) => number | undefined): number | null {
+  const multiplier = executionMultipliers(bp)
   let total = 0
   for (const n of bp.nodes) {
     if (n.kind !== 'agent') continue
-    const cap = n.budget?.maxTokens ?? fallback
+    const cap = capOf(n)
     if (!cap) return null
     total += cap * (multiplier.get(n.id) ?? 1)
   }
   return total
+}
+
+/**
+ * Worst-case token ceiling from the budgets on the page, or `null` when some
+ * agent has no bound at all (which is itself the finding: an unbounded flow
+ * has no ceiling).
+ *
+ * This is a ceiling built from limits the user set, not a prediction of what
+ * the flow will actually use. Real estimates need run history (Phase 4).
+ */
+export function budgetCeiling(bp: Blueprint): number | null {
+  return ceiling(bp, (n) => n.budget?.maxTokens ?? bp.defaultBudget.maxTokens)
+}
+
+/** The dollar equivalent, and the number a run is actually held to. */
+export function usdCeiling(bp: Blueprint): number | null {
+  return ceiling(bp, (n) => n.budget?.maxUsd ?? bp.defaultBudget.maxUsd)
+}
+
+/**
+ * Why this blueprint cannot be executed by the engine today. Design and run
+ * are deliberately separate: a flow may be valid to draw before it is
+ * runnable. Empty means runnable.
+ */
+export function unrunnableReasons(bp: Blueprint): string[] {
+  const reasons: string[] = []
+  if (hasErrors(validateBlueprint(bp))) reasons.push('Fix the errors in the Problems panel first.')
+
+  const unsupported = new Set(
+    bp.nodes.filter((n) => n.kind === 'fanout' || n.kind === 'join' || n.kind === 'merge').map((n) => n.kind)
+  )
+  for (const kind of unsupported) {
+    reasons.push(`The run engine cannot execute ${kind} nodes yet (parallel and merge steps are the next phase).`)
+  }
+
+  // A run is a walk along a chain: each node continues to at most one next
+  // node, apart from a gate's separate pass and fail edges.
+  for (const n of bp.nodes) {
+    const forward = bp.edges.filter((e) => e.from === n.id && !(n.kind === 'gate' && e.condition === 'fail'))
+    if (forward.length > 1) {
+      reasons.push(`"${nameOf(n)}" continues to ${forward.length} nodes; only single-path flows can run for now.`)
+    }
+  }
+
+  const trigger = bp.nodes.find((n) => n.kind === 'trigger')
+  if (trigger && !bp.edges.some((e) => e.from === trigger.id)) {
+    reasons.push('The Trigger is not connected to anything, so there is nothing to run.')
+  }
+
+  if (usdCeiling(bp) === null) {
+    reasons.push('Every agent needs a dollar limit (or set a flow default) so the run has a hard spending ceiling.')
+  }
+  return reasons
 }
 
 let counter = 0
@@ -308,10 +384,18 @@ export function makeNode(kind: NodeKind, id: string, position: { x: number; y: n
         ...base,
         kind,
         label: 'Agent',
-        config: { role: 'Agent', model: 'default', prompt: '', worktree: false, tools: [], outputSchema: '' }
+        config: {
+          role: 'Agent',
+          model: 'default',
+          prompt: '',
+          worktree: false,
+          access: 'read',
+          tools: [],
+          outputSchema: ''
+        }
       }
     case 'fanout':
-      return { ...base, kind, label: 'Fan-out', config: { mode: 'count', count: 3 } }
+      return { ...base, kind, label: 'Fan-out', config: { count: 3 } }
     case 'join':
       return { ...base, kind, label: 'Join', config: { strategy: 'all', quorum: 2 } }
     case 'gate':
@@ -330,4 +414,63 @@ export function makeNode(kind: NodeKind, id: string, position: { x: number; y: n
         config: { baseBranch: 'main', resolveConflicts: true, resolverPrompt: '' }
       }
   }
+}
+
+/**
+ * Nodes grouped into columns by how far they are from the Trigger along
+ * forward edges (a gate's retry edge does not count). Used to draw a compact
+ * left-to-right stepper of a flow; anything unreachable goes in a last column.
+ */
+export function flowLevels(bp: Blueprint): BlueprintNode[][] {
+  const adj = forwardAdjacency(bp)
+  const level = new Map<string, number>()
+  const queue = bp.nodes.filter((n) => n.kind === 'trigger').map((n) => n.id)
+  for (const id of queue) level.set(id, 0)
+  for (let i = 0; i < queue.length; i++) {
+    const id = queue[i]
+    for (const next of adj.get(id) ?? []) {
+      if (!level.has(next)) {
+        level.set(next, level.get(id)! + 1)
+        queue.push(next)
+      }
+    }
+  }
+  const columns: BlueprintNode[][] = []
+  const stray: BlueprintNode[] = []
+  for (const n of bp.nodes) {
+    const l = level.get(n.id)
+    if (l === undefined) stray.push(n)
+    else (columns[l] ??= []).push(n)
+  }
+  const out = columns.filter(Boolean).map((c) => c.sort((a, b) => a.position.y - b.position.y))
+  if (stray.length) out.push(stray)
+  return out
+}
+
+export interface RunSummary {
+  agents: { label: string; model: string; edits: boolean; ownBranch: boolean; tools: string[] }[]
+  commands: { label: string; command: string }[]
+  humanGates: string[]
+  ceilingUsd: number | null
+}
+
+/** What pressing Run would actually do, in plain terms. A blueprint is code
+ *  that spends money and changes repos, so this is shown before it starts. */
+export function summarizeRun(bp: Blueprint): RunSummary {
+  const summary: RunSummary = { agents: [], commands: [], humanGates: [], ceilingUsd: usdCeiling(bp) }
+  for (const n of bp.nodes) {
+    if (n.kind === 'agent') {
+      summary.agents.push({
+        label: n.label || n.config.role,
+        model: n.config.model,
+        edits: n.config.access === 'edit',
+        ownBranch: n.config.worktree,
+        tools: n.config.tools
+      })
+    } else if (n.kind === 'gate') {
+      if (n.config.check === 'command') summary.commands.push({ label: n.label || 'Gate', command: n.config.command })
+      else summary.humanGates.push(n.label || 'Gate')
+    }
+  }
+  return summary
 }

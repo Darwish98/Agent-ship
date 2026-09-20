@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { budgetCeiling, hasErrors, renderTemplate, templateVars, validateBlueprint } from './blueprint'
+import {
+  budgetCeiling,
+  flowLevels,
+  hasErrors,
+  renderTemplate,
+  summarizeRun,
+  templateVars,
+  unrunnableReasons,
+  usdCeiling,
+  validateBlueprint
+} from './blueprint'
 import { emptyBlueprint, fromPattern, PATTERNS } from './patterns'
+import { promptVars } from './runs'
 import { parseBlueprint, type Blueprint } from './schema'
 
 const messages = (bp: Blueprint, severity?: 'error' | 'warning'): string[] =>
@@ -86,7 +97,7 @@ describe('validation', () => {
       kind: 'agent',
       label: 'Orphan',
       position: { x: 0, y: 0 },
-      config: { role: 'o', model: 'default', prompt: 'x', worktree: false, tools: [], outputSchema: '' }
+      config: { role: 'o', model: 'default', prompt: 'x', worktree: false, access: 'read', tools: [], outputSchema: '' }
     })
     expect(messages(bp, 'error').some((m) => /can never run/.test(m))).toBe(true)
   })
@@ -144,6 +155,29 @@ describe('budget ceiling', () => {
   })
 })
 
+describe('node output references', () => {
+  it('resolves {{node.output.field}} from a structured result, including nested fields and whole arrays', () => {
+    const bp = fromPattern(PATTERNS[2])
+    const plan = bp.nodes.find((n) => n.id === 'plan')!
+    if (plan.kind === 'agent') plan.config.outputSchema = '{"type":"object"}'
+    const view = {
+      inputs: {},
+      blueprint: bp,
+      nodes: { plan: { state: 'passed' as const, attempts: 1, costUsd: 0.1, tokens: 1, detail: '{"title":"T","steps":["a","b"],"meta":{"risk":"low"}}' } }
+    }
+    const vars = promptVars(view, 'up')
+    expect(renderTemplate('{{plan.output.title}} / {{plan.output.meta.risk}} / {{plan.output.steps}} / {{plan.output.steps.1}}', vars)).toBe('T / low / ["a","b"] / b')
+    expect(vars.upstream).toBe('up')
+    expect(vars['plan.cost']).toBe('0.1000')
+  })
+
+  it('leaves an output reference visible when the node had no JSON output', () => {
+    const bp = fromPattern(PATTERNS[2])
+    const view = { inputs: {}, blueprint: bp, nodes: { plan: { state: 'passed' as const, attempts: 1, costUsd: 0, tokens: 0, detail: 'plain text' } } }
+    expect(renderTemplate('{{plan.output.x}}', promptVars(view, ''))).toBe('{{plan.output.x}}')
+  })
+})
+
 describe('shipped prompts', () => {
   it('renders the merge brief with the branches and no leftover placeholders', () => {
     const node = PATTERNS[1].nodes.find((n) => n.kind === 'merge')
@@ -161,5 +195,72 @@ describe('shipped prompts', () => {
     const node = PATTERNS[0].nodes.find((n) => n.kind === 'agent')
     if (node?.kind !== 'agent') throw new Error('no agent node')
     expect(renderTemplate(node.config.prompt, { brief: 'do the thing {{x}}' })).toBe('do the thing {{x}}')
+  })
+})
+
+describe('run planning helpers', () => {
+  it('summarises what a pipeline run will do', () => {
+    const s = summarizeRun(fromPattern(PATTERNS[2]))
+    expect(s.agents.map((a) => [a.label, a.edits, a.ownBranch])).toEqual([
+      ['Planner', false, false],
+      ['Builder', true, true],
+      ['Reviewer', false, false]
+    ])
+    expect(s.commands).toEqual([{ label: 'Tests pass', command: 'npm test' }])
+    expect(s.ceilingUsd).toBeCloseTo(0.5 + 1 * 4 + 0.5)
+  })
+
+  it('ships runnable patterns and marks the parallel one as not runnable yet', () => {
+    expect(unrunnableReasons(fromPattern(PATTERNS[0]))).toEqual([])
+    expect(unrunnableReasons(fromPattern(PATTERNS[2]))).toEqual([])
+    expect(unrunnableReasons(fromPattern(PATTERNS[3])).join(' ')).toMatch(/fanout/)
+  })
+
+  it('refuses to run a flow with no dollar ceiling', () => {
+    const bp = fromPattern(PATTERNS[2])
+    bp.defaultBudget = {}
+    for (const n of bp.nodes) n.budget = n.kind === 'gate' ? n.budget : undefined
+    expect(unrunnableReasons(bp).join(' ')).toMatch(/dollar limit/)
+    expect(usdCeiling(bp)).toBeNull()
+  })
+
+  it('refuses a flow whose trigger goes nowhere', () => {
+    const bp = fromPattern(PATTERNS[0])
+    bp.edges = []
+    expect(unrunnableReasons(bp).join(' ')).toMatch(/not connected/)
+  })
+
+  it('refuses a step that fans out to two nodes', () => {
+    const bp = fromPattern(PATTERNS[2])
+    bp.edges.push({ id: 'plan->review', from: 'plan', to: 'review', type: 'artifact', condition: 'always' })
+    expect(unrunnableReasons(bp).join(' ')).toMatch(/continues to 2 nodes/)
+  })
+
+  it('lays a pipeline out in columns, keeping the retry edge out of the ordering', () => {
+    const cols = flowLevels(fromPattern(PATTERNS[2])).map((c) => c.map((n) => n.id))
+    expect(cols).toEqual([['start'], ['plan'], ['build'], ['tests'], ['review']])
+  })
+
+  it('accepts node references in prompts and rejects an unknown one', () => {
+    const bp = fromPattern(PATTERNS[2])
+    const msgs = validateBlueprint(bp).map((p) => p.message)
+    expect(msgs.some((m) => m.includes('{{plan.result}}'))).toBe(false)
+    const build = bp.nodes.find((n) => n.id === 'build')!
+    if (build.kind === 'agent') build.config.prompt = '{{nope.result}} {{plan.output.steps}}'
+    const after = validateBlueprint(bp).map((p) => p.message)
+    expect(after.some((m) => m.includes('{{nope.result}}'))).toBe(true)
+    expect(after.some((m) => m.includes('{{plan.output.steps}}'))).toBe(false)
+  })
+
+  it('flags an output schema that is not JSON, and an editing agent with no worktree', () => {
+    const bp = fromPattern(PATTERNS[2])
+    const build = bp.nodes.find((n) => n.id === 'build')!
+    if (build.kind === 'agent') {
+      build.config.outputSchema = '{ nope'
+      build.config.worktree = false
+    }
+    const msgs = validateBlueprint(bp)
+    expect(msgs.some((p) => p.severity === 'error' && /not valid JSON/.test(p.message))).toBe(true)
+    expect(msgs.some((p) => p.severity === 'warning' && /live checkout/.test(p.message))).toBe(true)
   })
 })

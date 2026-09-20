@@ -2,6 +2,7 @@
 //   <project>/.agentship/flows/<slug>.flow.json
 // The renderer only ever names a registered project and a slug. It never
 // supplies a path, so it cannot be used to write anywhere else on disk.
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseBlueprint, type Blueprint } from '../shared/schema'
@@ -16,7 +17,10 @@ export interface FlowSummary {
   error?: string
 }
 
-export type FlowResult<T> = ({ ok: true } & T) | { ok: false; error: string }
+/** `conflict` means the file changed on disk since the caller last saw it. */
+export type FlowResult<T> = ({ ok: true } & T) | { ok: false; error: string; conflict?: boolean }
+
+export const hashText = (text: string): string => crypto.createHash('sha1').update(text).digest('hex')
 
 const SLUG = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const SUFFIX = '.flow.json'
@@ -63,26 +67,47 @@ export function loadFlow(
   userData: string,
   projectId: string,
   slug: string
-): FlowResult<{ blueprint: Blueprint }> {
+): FlowResult<{ blueprint: Blueprint; hash: string }> {
   const dir = flowsDir(userData, projectId)
   const file = dir && fileFor(dir, slug)
   if (!file) return { ok: false, error: 'Unknown project or invalid flow name.' }
   try {
-    const parsed = parseBlueprint(JSON.parse(fs.readFileSync(file, 'utf8')))
-    return parsed.ok ? { ok: true, blueprint: parsed.blueprint } : { ok: false, error: parsed.error }
+    const text = fs.readFileSync(file, 'utf8')
+    const parsed = parseBlueprint(JSON.parse(text))
+    return parsed.ok ? { ok: true, blueprint: parsed.blueprint, hash: hashText(text) } : { ok: false, error: parsed.error }
   } catch (err) {
     return { ok: false, error: (err as Error).message }
   }
 }
 
-/** Validates before writing, and writes via a temp file + rename so a crash
- *  mid-save can never leave a half-written blueprint behind. */
+/** Cheap change detector: the hash of what is on disk now (null = no file). */
+export function peekFlow(userData: string, projectId: string, slug: string): string | null {
+  const dir = flowsDir(userData, projectId)
+  const file = dir && fileFor(dir, slug)
+  if (!file) return null
+  try {
+    return hashText(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Validates before writing, and writes via a temp file + rename so a crash
+ * mid-save can never leave a half-written blueprint behind.
+ *
+ * The file lives in git, so it can change under an open editor (checkout,
+ * pull). `expected` is the hash the caller last saw: a string means "only
+ * overwrite that version", `null` means "the file must not exist yet", and
+ * `undefined` means overwrite regardless (the user chose to keep their copy).
+ */
 export function saveFlow(
   userData: string,
   projectId: string,
   slug: string,
-  raw: unknown
-): FlowResult<{ blueprint: Blueprint }> {
+  raw: unknown,
+  expected?: string | null
+): FlowResult<{ blueprint: Blueprint; hash: string }> {
   const dir = flowsDir(userData, projectId)
   const file = dir && fileFor(dir, slug)
   if (!dir || !file) return { ok: false, error: 'Unknown project or invalid flow name.' }
@@ -91,11 +116,22 @@ export function saveFlow(
   if (!parsed.ok) return { ok: false, error: parsed.error }
 
   try {
+    if (expected !== undefined) {
+      const current = fs.existsSync(file) ? hashText(fs.readFileSync(file, 'utf8')) : null
+      if (current !== expected) {
+        return {
+          ok: false,
+          conflict: true,
+          error: current === null ? 'This flow was deleted on disk.' : 'This flow changed on disk since you opened it.'
+        }
+      }
+    }
     fs.mkdirSync(dir, { recursive: true })
+    const text = `${JSON.stringify(parsed.blueprint, null, 2)}\n`
     const tmp = `${file}.tmp`
-    fs.writeFileSync(tmp, `${JSON.stringify(parsed.blueprint, null, 2)}\n`)
+    fs.writeFileSync(tmp, text)
     fs.renameSync(tmp, file)
-    return { ok: true, blueprint: parsed.blueprint }
+    return { ok: true, blueprint: parsed.blueprint, hash: hashText(text) }
   } catch (err) {
     return { ok: false, error: (err as Error).message }
   }

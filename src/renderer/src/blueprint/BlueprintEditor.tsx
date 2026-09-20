@@ -14,9 +14,13 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type JSX } from 'react'
 import type { FlowSummary, Project } from '../../../preload'
-import { hasErrors, makeNode, newId, NODE_KINDS, slugify, validateBlueprint } from '../../../shared/blueprint'
+import { hasErrors, makeNode, newId, NODE_KINDS, slugify, unrunnableReasons, validateBlueprint } from '../../../shared/blueprint'
+import { formatUsd, isActive } from '../../../shared/runs'
 import { emptyBlueprint, fromPattern, PATTERNS } from '../../../shared/patterns'
 import type { Blueprint, BlueprintEdge, BlueprintNode, NodeKind } from '../../../shared/schema'
+import { useNav } from '../nav'
+import { RunDetail, SpendMeter, STATUS_LABEL } from '../runs/RunDetail'
+import { useRuns } from '../runs/RunsProvider'
 import { BlueprintNodeView, type BpNodeData } from './BlueprintNodeView'
 import { Inspector } from './Inspector'
 import { useBlueprintDoc } from './useBlueprintDoc'
@@ -29,8 +33,12 @@ const SAVE_LABEL = {
   dirty: 'Unsaved…',
   saving: 'Saving…',
   saved: 'Saved to .agentship/flows',
-  error: 'Save failed'
+  error: 'Save failed',
+  conflict: 'Changed on disk'
 } as const
+
+/** Parallel and merge steps can be drawn but the engine cannot run them yet. */
+const DESIGN_ONLY = new Set<NodeKind>(['fanout', 'join', 'merge'])
 
 function edgeType(from: BlueprintNode, taken: BlueprintEdge[]): Pick<BlueprintEdge, 'type' | 'condition'> {
   if (from.kind === 'trigger') return { type: 'control', condition: 'always' }
@@ -48,7 +56,10 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
   const [flows, setFlows] = useState<FlowSummary[]>([])
   const [loadError, setLoadError] = useState('')
 
-  const doc = useBlueprintDoc(projectId)
+  const doc = useBlueprintDoc(projectId, active)
+  const nav = useNav()
+  const runs = useRuns()
+  const [showRun, setShowRun] = useState(false)
   const { bp } = doc
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
@@ -92,7 +103,7 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
       }
       setSelectedId(null)
       setSelectedEdgeId(null)
-      doc.open(slug, result.blueprint)
+      doc.open(slug, result.blueprint, result.hash)
     },
     [projectId, doc]
   )
@@ -104,7 +115,7 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
       const base = slugify(blueprint.name)
       let slug = base
       for (let i = 2; taken.has(slug); i++) slug = `${base}-${i}`
-      const result = await window.agentShip.saveFlow(projectId, slug, blueprint)
+      const result = await window.agentShip.saveFlow(projectId, slug, blueprint, null)
       if (!result.ok) {
         setLoadError(`Could not create the flow: ${result.error}`)
         return
@@ -112,7 +123,7 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
       await refreshFlows(projectId)
       setSelectedId(null)
       setSelectedEdgeId(null)
-      doc.open(slug, result.blueprint)
+      doc.open(slug, result.blueprint, result.hash)
     },
     [projectId, flows, doc, refreshFlows]
   )
@@ -133,9 +144,34 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
     [projectId, refreshFlows]
   )
 
+  // Asked to open a particular flow (and node) from the Floor.
+  const { focus, clearFocus } = nav
+  useEffect(() => {
+    if (!focus) return
+    void (async () => {
+      clearFocus()
+      if (focus.projectId !== projectId) await switchProject(focus.projectId)
+      const result = await window.agentShip.loadFlow(focus.projectId, focus.slug)
+      if (!result.ok) {
+        setLoadError(`Could not open "${focus.slug}": ${result.error}`)
+        return
+      }
+      setProjectId(focus.projectId)
+      doc.open(focus.slug, result.blueprint, result.hash)
+      setSelectedId(focus.nodeId ?? null)
+      setSelectedEdgeId(null)
+      setShowRun(true)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus])
+
+  const run = doc.slug ? runs.runFor(projectId, doc.slug) : undefined
+  const runActive = Boolean(run && isActive(run.status))
+
   // --- editing ---------------------------------------------------------------
 
   const problems = useMemo(() => (bp ? validateBlueprint(bp) : []), [bp])
+  const runBlockers = useMemo(() => (bp ? unrunnableReasons(bp) : []), [bp])
   const perNode = useMemo(() => {
     const m = new Map<string, { errors: number; warnings: number }>()
     for (const p of problems) {
@@ -237,9 +273,14 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
         type: 'bp',
         position: n.position,
         selected: n.id === selectedId,
-        data: { node: n, errors: perNode.get(n.id)?.errors ?? 0, warnings: perNode.get(n.id)?.warnings ?? 0 } satisfies BpNodeData
+        data: {
+          node: n,
+          errors: perNode.get(n.id)?.errors ?? 0,
+          warnings: perNode.get(n.id)?.warnings ?? 0,
+          run: run?.nodes[n.id]
+        } satisfies BpNodeData
       })),
-    [bp, selectedId, perNode]
+    [bp, selectedId, perNode, run]
   )
 
   const [nodes, setNodes] = useState<Node[]>([])
@@ -279,6 +320,7 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
           id: e.id,
           source: e.from,
           target: e.to,
+          ...(fail ? { sourceHandle: 'fail', targetHandle: 'retry', type: 'smoothstep' } : {}),
           selected: e.id === selectedEdgeId,
           animated: fail,
           label: e.condition === 'always' ? (e.type === 'branch' ? 'branch' : undefined) : e.condition,
@@ -341,13 +383,53 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
           <button
             type="button"
             className="btn btn-primary"
-            disabled
-            title="The run engine is not built yet, so nothing can execute. Blueprints are design-time only for now."
+            disabled={runBlockers.length > 0 || runActive || doc.saveState === 'conflict'}
+            title={
+              runActive
+                ? 'This flow is already running.'
+                : runBlockers.length
+                  ? `Cannot run yet:\n- ${runBlockers.join('\n- ')}`
+                  : 'Review what will execute, then start'
+            }
+            onClick={() => {
+              // The engine reads the file from disk, so make sure it is current.
+              void doc.flush().then(() => nav.requestRun(projectId, doc.slug!))
+            }}
           >
-            Run · not built yet
+            ▶ Run
           </button>
         </div>
       </header>
+
+      {doc.saveState === 'conflict' && (
+        <div className="bp-banner bp-banner-warn">
+          <span>
+            <strong>This flow changed on disk</strong> (a pull or checkout?) while you had unsaved edits. Nothing was overwritten.
+          </span>
+          <button type="button" className="btn" onClick={() => void doc.resolveConflict('theirs')}>
+            Load the file on disk
+          </button>
+          <button type="button" className="btn" onClick={() => void doc.resolveConflict('mine')}>
+            Keep my version
+          </button>
+        </div>
+      )}
+      {doc.reloadedFromDisk && <div className="bp-banner">Reloaded: the file changed on disk.</div>}
+
+      {run && (
+        <div className={`bp-runbar bp-runbar-${run.status}`}>
+          <strong>{STATUS_LABEL[run.status]}</strong>
+          <span className="bp-runbar-meter">
+            <SpendMeter spent={run.spentUsd} ceiling={run.ceilingUsd} />
+          </span>
+          <span className="bp-runbar-sub">
+            {formatUsd(run.spentUsd)} spent{run.branch ? ` · branch ${run.branch}` : ''}
+          </span>
+          <button type="button" className="btn" onClick={() => setShowRun((v) => !v)}>
+            {showRun ? 'Hide run' : 'Show run'}
+          </button>
+        </div>
+      )}
 
       <div className="bp-body">
         <aside className="bp-palette">
@@ -365,7 +447,10 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
               onClick={() => addNode(k.kind)}
               title="Click to add, or drag onto the canvas"
             >
-              <strong>{k.title}</strong>
+              <strong>
+                {k.title}
+                {DESIGN_ONLY.has(k.kind) && <em className="bp-tag" title="You can draw this, but the run engine cannot execute it yet.">design only</em>}
+              </strong>
               <span>{k.blurb}</span>
             </button>
           ))}
@@ -407,6 +492,11 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
           </ReactFlow>
         </div>
 
+        {showRun && run ? (
+          <aside className="inspector bp-rundrawer">
+            <RunDetail run={run} inEditor onSelectNode={(id) => setSelectedId(id)} />
+          </aside>
+        ) : (
         <Inspector
           bp={bp}
           node={selectedNode}
@@ -416,6 +506,7 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
           onEdge={(next) => doc.commit({ ...bp, edges: bp.edges.map((e) => (e.id === next.id ? next : e)) })}
           onDelete={deleteSelection}
         />
+        )}
       </div>
 
       <footer className="bp-problems">

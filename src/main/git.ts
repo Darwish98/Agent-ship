@@ -77,19 +77,33 @@ export async function gitState(cwd: string): Promise<GitState> {
 
 /** Branches other than the base branch that hold commits the base lacks -
  *  what the orchestrator offers to merge. */
-export async function unmergedBranches(cwd: string): Promise<{ branch: string; ahead: number }[]> {
+export interface BranchInfo {
+  branch: string
+  ahead: number
+  /** Unix ms of the newest commit on the branch. */
+  lastCommitAt: number
+  subject: string
+}
+
+export async function unmergedBranches(cwd: string): Promise<BranchInfo[]> {
   const base = await resolveBaseBranch(cwd)
   if (!base) return []
 
-  const raw = await git(cwd, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']).catch(() => '')
-  const branches = raw.split('\n').map((b) => b.trim()).filter(Boolean)
+  const raw = await git(cwd, [
+    'for-each-ref',
+    '--format=%(refname:short)%09%(committerdate:unix)%09%(subject)',
+    'refs/heads'
+  ]).catch(() => '')
 
-  const out: { branch: string; ahead: number }[] = []
-  for (const branch of branches) {
-    if (branch === base) continue
+  const out: BranchInfo[] = []
+  for (const line of raw.split('\n').filter(Boolean)) {
+    const [branch, unix, ...subject] = line.split('\t')
+    if (!branch || branch === base) continue
     const count = await git(cwd, ['rev-list', '--count', `${base}..${branch}`]).catch(() => '0')
     const ahead = Number.parseInt(count, 10) || 0
-    if (ahead > 0) out.push({ branch, ahead })
+    if (ahead > 0) {
+      out.push({ branch, ahead, lastCommitAt: (Number.parseInt(unix, 10) || 0) * 1000, subject: subject.join('\t') })
+    }
   }
-  return out
+  return out.sort((a, b) => b.lastCommitAt - a.lastCommitAt)
 }

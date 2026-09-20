@@ -27,18 +27,27 @@ const agent = (
   label: string,
   prompt: string,
   col: number,
-  opts: { row?: number; worktree?: boolean; maxTokens?: number; tools?: string[] } = {}
+  opts: {
+    row?: number
+    worktree?: boolean
+    edit?: boolean
+    maxTokens?: number
+    maxUsd?: number
+    tools?: string[]
+  } = {}
 ): BlueprintNode => ({
   id,
   kind: 'agent',
   label,
   position: at(col, opts.row ?? 0),
-  budget: opts.maxTokens ? { maxTokens: opts.maxTokens } : undefined,
+  budget:
+    opts.maxTokens || opts.maxUsd ? { maxTokens: opts.maxTokens, maxUsd: opts.maxUsd } : undefined,
   config: {
     role: label,
     model: 'default',
     prompt,
     worktree: opts.worktree ?? false,
+    access: opts.edit ? 'edit' : 'read',
     tools: opts.tools ?? [],
     outputSchema: ''
   }
@@ -52,9 +61,9 @@ const SUPERVISOR: Blueprint = {
   description:
     'One orchestrator agent that takes your brief and delegates it to sub-agents of its own.',
   version: 1,
-  defaultBudget: {},
+  defaultBudget: { maxUsd: 3 },
   inputs: [{ name: 'brief', label: 'What should the orchestrator get done?', required: true }],
-  nodes: [trigger(), agent('orchestrator', 'Orchestrator', '{{brief}}', 1)],
+  nodes: [trigger(), agent('orchestrator', 'Orchestrator', '{{brief}}', 1, { edit: true })],
   edges: [edge('start', 'orchestrator', 'control')]
 }
 
@@ -108,16 +117,19 @@ const PIPELINE: Blueprint = {
   name: 'Plan → build → test → review',
   description: 'A builder works in its own branch until the tests pass, then a reviewer signs off.',
   version: 1,
-  defaultBudget: { maxTokens: 400_000 },
+  defaultBudget: { maxTokens: 400_000, maxUsd: 1 },
   inputs: [{ name: 'task', label: 'What should be built?', required: true }],
   nodes: [
     trigger(),
     agent('plan', 'Planner', 'Write a short, concrete implementation plan for: {{task}}', 1, {
-      maxTokens: 150_000
+      maxTokens: 150_000,
+      maxUsd: 0.5
     }),
-    agent('build', 'Builder', 'Implement this plan in the repository:\n\n{{upstream}}', 2, {
+    agent('build', 'Builder', 'Implement this plan in the repository:\n\n{{plan.result}}', 2, {
       worktree: true,
-      maxTokens: 600_000
+      edit: true,
+      maxTokens: 600_000,
+      maxUsd: 1
     }),
     {
       id: 'tests',
@@ -127,9 +139,13 @@ const PIPELINE: Blueprint = {
       budget: { maxRetries: 3 },
       config: { check: 'command', command: 'npm test', instructions: '' }
     },
-    agent('review', 'Reviewer', 'Review the change on this branch for correctness and risk:\n\n{{upstream}}', 4, {
-      maxTokens: 200_000
-    })
+    agent(
+      'review',
+      'Reviewer',
+      'Review the change on this branch for correctness and risk. Summarise your verdict.\n\nThe builder said:\n{{build.result}}',
+      4,
+      { maxTokens: 200_000, maxUsd: 0.5 }
+    )
   ],
   edges: [
     edge('start', 'plan', 'control'),
@@ -145,7 +161,7 @@ const TOURNAMENT: Blueprint = {
   name: 'Best-of-N tournament',
   description: 'N agents solve the same task in separate branches; the best passing one is merged.',
   version: 1,
-  defaultBudget: { maxTokens: 300_000 },
+  defaultBudget: { maxTokens: 300_000, maxUsd: 1 },
   inputs: [{ name: 'task', label: 'Task every contender attempts', required: true }],
   nodes: [
     trigger(),
@@ -154,9 +170,9 @@ const TOURNAMENT: Blueprint = {
       kind: 'fanout',
       label: 'Spread',
       position: at(1),
-      config: { mode: 'count', count: 3 }
+      config: { count: 3 }
     },
-    agent('contender', 'Contender', '{{task}}', 2, { worktree: true, maxTokens: 300_000 }),
+    agent('contender', 'Contender', '{{task}}', 2, { worktree: true, edit: true, maxTokens: 300_000, maxUsd: 1 }),
     {
       id: 'pick',
       kind: 'join',
@@ -190,7 +206,6 @@ const TOURNAMENT: Blueprint = {
 
 export const PATTERNS: readonly Blueprint[] = [SUPERVISOR, MERGE_TRAIN, PIPELINE, TOURNAMENT]
 
-export const SUPERVISOR_PATTERN = SUPERVISOR
 export const MERGE_TRAIN_PATTERN = MERGE_TRAIN
 
 /** A fresh copy the user can edit without touching the shipped one. */

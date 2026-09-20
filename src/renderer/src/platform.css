@@ -277,6 +277,10 @@
   border: 2px solid var(--surface);
 }
 
+.bp-handle-retry {
+  background: var(--low);
+}
+
 .bp-edge-fail .react-flow__edge-path {
   stroke: var(--low);
   stroke-dasharray: 5 4;

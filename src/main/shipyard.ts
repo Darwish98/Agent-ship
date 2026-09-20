@@ -17,13 +17,6 @@ export interface Settings {
   weeklyTokenBudget: number
 }
 
-export interface OrchestratorLink {
-  /** sessionId of the orchestrator */
-  from: string
-  /** sessionId of the sub-agent it directs */
-  to: string
-}
-
 const DEFAULT_SETTINGS: Settings = { weeklyTokenBudget: 50_000_000 }
 
 function filePath(dir: string, name: string): string {
@@ -63,6 +56,19 @@ export function addProject(dir: string, projectPath: string): Project[] {
   return list
 }
 
+/** Registers a folder the user already works in (found from Claude Code's own
+ *  sessions). Only real git repositories are accepted, so this cannot be used
+ *  to point the flow store at an arbitrary directory. */
+export function addProjectIfRepo(dir: string, projectPath: string): Project[] {
+  const resolved = path.resolve(projectPath)
+  try {
+    if (!fs.statSync(resolved).isDirectory() || !fs.existsSync(path.join(resolved, '.git'))) return loadProjects(dir)
+  } catch {
+    return loadProjects(dir)
+  }
+  return addProject(dir, resolved)
+}
+
 export function removeProject(dir: string, id: string): Project[] {
   const list = loadProjects(dir).filter((p) => p.id !== id)
   writeJson(dir, 'shipyard.json', list)
@@ -89,14 +95,4 @@ export function loadHidden(dir: string): string[] {
 export function setHidden(dir: string, ids: string[]): string[] {
   writeJson(dir, 'hidden.json', ids)
   return ids
-}
-
-export function loadLinks(dir: string): OrchestratorLink[] {
-  const list = readJson<OrchestratorLink[]>(filePath(dir, 'links.json'), [])
-  return Array.isArray(list) ? list : []
-}
-
-export function saveLinks(dir: string, links: OrchestratorLink[]): OrchestratorLink[] {
-  writeJson(dir, 'links.json', links)
-  return links
 }

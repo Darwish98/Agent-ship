@@ -4,6 +4,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { Shell } from './Shell'
 import './styles.css'
 import './platform.css'
+import './floor.css'
 
 // Opened in a plain browser during development there is no preload bridge,
 // so stand one up with sample data. Stripped from production builds.

@@ -5,7 +5,7 @@ import { shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { renderTemplate } from '../shared/blueprint'
-import { MERGE_TRAIN_PATTERN, SUPERVISOR_PATTERN } from '../shared/patterns'
+import { MERGE_TRAIN_PATTERN } from '../shared/patterns'
 
 const run = promisify(execFile)
 
@@ -22,6 +22,8 @@ export interface RunningAgent {
   sessionId: string
   name: string
   startedAt: number
+  /** As reported by `claude agents --json` (observed: idle, busy). */
+  status?: string
 }
 
 /**
@@ -141,20 +143,5 @@ export function spawnMergeOrchestrator(
     AGENT_SHIP_NAME: 'Orchestrator',
     AGENT_SHIP_ROLE: 'Orchestrator',
     AGENT_SHIP_TASK: `Merge ${branches.length} branch(es) into ${baseBranch}`
-  })
-}
-
-/** Spawns an orchestrator that delegates the given brief to sub-agents. The
- *  prompt template is the shipped "Supervisor" blueprint's agent node. */
-export function spawnOrchestrator(projectPath: string, brief: string): SpawnResult {
-  if (!projectPath || !brief) return { ok: false, error: 'A project and brief are required.' }
-
-  const node = SUPERVISOR_PATTERN.nodes.find((n) => n.kind === 'agent')
-  if (node?.kind !== 'agent') return { ok: false, error: 'The Supervisor blueprint is missing its agent node.' }
-
-  return launch(['--bg', '--name', node.config.role, renderTemplate(node.config.prompt, { brief })], projectPath, {
-    AGENT_SHIP_NAME: node.config.role,
-    AGENT_SHIP_ROLE: node.config.role,
-    AGENT_SHIP_TASK: brief
   })
 }

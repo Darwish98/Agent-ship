@@ -96,10 +96,21 @@ large (fan-out payloads, diffs).
 - Auto-mode may refuse `--permission-mode bypassPermissions`; `dontAsk` with
   an explicit `--allowedTools` list worked and is the better default anyway.
 
-## Decisions this spike settles
+## 7. Round 2 probes (engine dependencies)
 
-1. Engine step = `claude -p --output-format json --session-id <uuid> -w <name>
-   --permission-mode dontAsk --allowedTools ... --max-budget-usd ...`.
+All with Haiku, cents each. Run in a manual `git worktree add` checkout.
+
+- **Prompt over stdin works:** `echo "..." | claude -p ...`. This removes the Windows command-line length limit (open item in section 5) and all quoting concerns. The engine passes every prompt this way.
+- **`--session-id <uuid>` then `--resume <uuid>` from the same directory continues the session**, and the second call was much cheaper ($0.008 vs $0.018) because of prompt caching. So a gate-fail repair loop is "resume the builder with the failure output", not a cold restart.
+- **`--permission-mode acceptEdits` lets the agent write files** with no `--allowedTools` at all. Under it a simple `echo hi > x.txt` through Bash was *also* allowed with only `Read` allow-listed. Treat "edit access" as "may modify files in its working directory", not as "cannot run commands". (No arbitrary `npm`/`git` was tested.) The real containment is the worktree, not the permission mode.
+- **Budget cap is checked after each model call, not during it.** `--max-budget-usd 0.001` produced exit code 1, `subtype: "error_max_budget_usd"`, `terminal_reason: "budget_exhausted"`, `errors: ["Reached maximum budget ($0.001)"]`, and a total cost of **$0.0143**. The guarantee is "stops within one model call of the cap", so a cold first call (~$0.015 on Haiku, more on larger models) can overshoot a tiny cap. Caps below ~$0.05 are meaningless; the UI should say so.
+
+## Decisions this spike settles (revised after building the engine)
+
+1. Engine step = `claude -p` with the prompt on stdin, `--output-format json`, an engine-chosen `--session-id` (or `--resume` for a repair), `--permission-mode dontAsk|acceptEdits`, `--permission-prompts none`, `--max-budget-usd`. **Worktrees are created by the engine** (`git worktree add -b agentship/...`, kept out of the repo, removed after the run, branch kept), not by `claude -w`, which leaves them locked.
 2. Cost/token ledger reads the result JSON; transcripts are only for replay.
-3. Cancel = child kill (headless) or `claude stop` + `claude rm` (background).
-4. Human gate = pause between steps, resume by session id.
+3. Cancel = kill the child process tree (headless); `claude stop`/`claude rm` stay for background sessions.
+4. Human gate = pause between steps; a rejection note is fed back by resuming the session.
+5. The dollar cap is a per-call check: guarantee "stops within one model call of the cap".
+
+Verified live (opt-in tests, Haiku): a one-agent flow, the cap stop, and a gate-failure repair by session resume.

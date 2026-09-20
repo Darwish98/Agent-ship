@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react'
-import { budgetCeiling, BUILTIN_VARS } from '../../../shared/blueprint'
+import { budgetCeiling, BUILTIN_VARS, usdCeiling } from '../../../shared/blueprint'
 import type { Blueprint, BlueprintEdge, BlueprintNode, Budget } from '../../../shared/schema'
 
 interface Props {
@@ -48,7 +48,22 @@ function BudgetFields({
     <fieldset className="insp-group">
       <legend>Budget</legend>
       {!gate && (
-        <Field label="Max tokens" hint="Hard ceiling for this node. A cold call alone costs ~30k.">
+        <Field label="Max dollars" hint="The hard limit. Enforced by the CLI after each model call, so a step can overshoot by one call. Under ~$0.05 is not meaningful.">
+          <input
+            type="number"
+            min={0.01}
+            step={0.1}
+            value={budget?.maxUsd ?? ''}
+            placeholder="flow default"
+            onChange={(e) => {
+              const n = Number(e.target.value)
+              set({ maxUsd: e.target.value.trim() === '' || !(n > 0) ? undefined : n })
+            }}
+          />
+        </Field>
+      )}
+      {!gate && (
+        <Field label="Max tokens" hint="Checked when a step ends: a step that used more stops the run. A cold call alone costs ~30k.">
           <input
             type="number"
             min={1}
@@ -104,8 +119,17 @@ function NodeFields({ node, onNode }: { node: BlueprintNode; onNode: Props['onNo
               ))}
             </select>
           </Field>
-          <Field label="Prompt" hint={`Variables: ${BUILTIN_VARS.map((v) => `{{${v}}}`).join(' ')} or a flow input.`}>
+          <Field
+            label="Prompt"
+            hint={`Variables: ${BUILTIN_VARS.map((v) => `{{${v}}}`).join(' ')}, a flow input, or an earlier node: {{node-id.result}} {{node-id.branch}}.`}
+          >
             <textarea rows={7} value={c.prompt} onChange={(e) => set({ prompt: e.target.value }, 'prompt')} />
+          </Field>
+          <Field label="Access" hint="Edit lets the agent modify files in its working directory. The worktree, not this setting, is what contains it.">
+            <select value={c.access} onChange={(e) => set({ access: e.target.value as typeof c.access }, 'access')}>
+              <option value="read">read-only</option>
+              <option value="edit">can edit files</option>
+            </select>
           </Field>
           <label className="insp-check">
             <input
@@ -305,6 +329,7 @@ export function Inspector({ bp, node, edge, onNode, onFlow, onEdge, onDelete }: 
   }
 
   const ceiling = budgetCeiling(bp)
+  const usd = usdCeiling(bp)
   return (
     <aside className="inspector">
       <h3>Flow</h3>
@@ -316,6 +341,19 @@ export function Inspector({ bp, node, edge, onNode, onFlow, onEdge, onDelete }: 
       </Field>
       <fieldset className="insp-group">
         <legend>Budget</legend>
+        <Field label="Default dollars per agent" hint="Applies to any agent without its own limit. A run needs one to start.">
+          <input
+            type="number"
+            min={0.01}
+            step={0.1}
+            value={bp.defaultBudget.maxUsd ?? ''}
+            placeholder="none"
+            onChange={(e) => {
+              const n = Number(e.target.value)
+              onFlow({ ...bp, defaultBudget: { ...bp.defaultBudget, maxUsd: e.target.value.trim() === '' || !(n > 0) ? undefined : n } }, 'dusd')
+            }}
+          />
+        </Field>
         <Field label="Default tokens per agent" hint="Applies to any agent without its own limit.">
           <input
             type="number"
@@ -327,18 +365,23 @@ export function Inspector({ bp, node, edge, onNode, onFlow, onEdge, onDelete }: 
             }
           />
         </Field>
-        <p className={`insp-ceiling${ceiling === null ? ' insp-ceiling-bad' : ''}`}>
-          {ceiling === null ? (
+        <p className={`insp-ceiling${usd === null ? ' insp-ceiling-bad' : ''}`}>
+          {usd === null ? (
             <>
-              <b>Unbounded.</b> At least one agent has no token limit, so this flow has no spending ceiling.
+              <b>No dollar ceiling.</b> Give every agent a dollar limit (or a flow default) and this flow can run.
             </>
           ) : (
             <>
-              Worst case <b>{fmt(ceiling)} tokens</b> (fan-out and retries counted). A ceiling from your limits, not a
-              forecast.
+              Run ceiling <b>${usd.toFixed(2)}</b> in the worst case (fan-out and retries counted).
             </>
           )}
         </p>
+        {ceiling !== null && (
+          <p className="insp-ceiling">
+            Token limits add up to <b>{fmt(ceiling)}</b> in the worst case. Tokens are checked when each step ends; the dollar
+            limit is what the CLI enforces during a step.
+          </p>
+        )}
       </fieldset>
       <fieldset className="insp-group">
         <legend>Inputs</legend>
