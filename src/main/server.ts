@@ -3,7 +3,7 @@
 import http from 'node:http'
 
 export const HOST = '127.0.0.1'
-export const PORT = 8934
+export const PORT = Number(process.env.AGENT_SHIP_PORT) || 8934
 
 export interface AgentEvent {
   sessionId: string

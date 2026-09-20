@@ -1,11 +1,13 @@
 import {
+  applyNodeChanges,
   Background,
   BackgroundVariant,
   Controls,
   ReactFlow,
   type Connection,
   type Edge,
-  type Node
+  type Node,
+  type NodeChange
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
@@ -66,6 +68,10 @@ function spotAwayFrom(taken: Spot[]): Spot {
 export default function App(): JSX.Element {
   const world = useAgentWorld()
   const { rooms, agents, settings, weeklyTokens } = world
+  // `world` is a fresh object every render; callbacks that close over it would
+  // change identity each time and churn the graph. Read it through a ref.
+  const worldRef = useRef(world)
+  worldRef.current = world
 
   const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(new Map())
   const [links, setLinks] = useState<OrchestratorLink[]>([])
@@ -171,7 +177,7 @@ export default function App(): JSX.Element {
           onSubmit: async () => {
             const result = await window.agentShip.stopAgent(agent.pid!)
             if (!result.ok) return result.error ?? 'Could not stop the agent.'
-            await world.refreshSessions()
+            await worldRef.current.refreshSessions()
             return null
           }
         })
@@ -185,19 +191,19 @@ export default function App(): JSX.Element {
         taskField: false,
         submitLabel: 'Remove',
         onSubmit: async () => {
-          await world.hideAgent(agent.sessionId)
+          await worldRef.current.hideAgent(agent.sessionId)
           return null
         }
       })
     },
-    [world]
+    []
   )
 
   const restoreAgent = useCallback(
     (agent: HiddenAgent) => {
-      void world.restoreAgent(agent.sessionId)
+      void worldRef.current.restoreAgent(agent.sessionId)
     },
-    [world]
+    []
   )
 
   const envelopeAgents = useMemo(() => agents.filter((a) => a.hasEnvelope), [agents])
@@ -212,7 +218,7 @@ export default function App(): JSX.Element {
     const plan: { room: Room; branches: string[]; baseBranch: string }[] = []
     for (const room of roomsWithWork) {
       const branches = await window.agentShip.unmergedBranches(room.path)
-      const git = world.gitStateFor(room.path)
+      const git = worldRef.current.gitStateFor(room.path)
       if (branches.length) {
         plan.push({
           room,
@@ -251,7 +257,7 @@ export default function App(): JSX.Element {
         return null
       }
     })
-  }, [envelopeAgents, rooms, world])
+  }, [envelopeAgents, rooms])
 
   const removeRoom = useCallback(
     async (room: Room) => {
@@ -261,14 +267,14 @@ export default function App(): JSX.Element {
       )
       if (!ok) return
       await window.agentShip.removeProject(room.id)
-      await world.refreshProjects()
+      await worldRef.current.refreshProjects()
     },
-    [world]
+    []
   )
 
   // --- graph -------------------------------------------------------------
 
-  const nodes = useMemo<Node[]>(() => {
+  const graphNodes = useMemo<Node[]>(() => {
     const out: Node[] = [
       {
         id: 'orchestrator',
@@ -348,6 +354,26 @@ export default function App(): JSX.Element {
     deleteAgent,
     restoreAgent
   ])
+
+  // React Flow hides a node until it has measured it, and it only remembers
+  // the measurement if the app keeps it. Handing it brand-new node objects on
+  // every refresh (sessions poll every 10s) threw the measurements away, so
+  // every node stayed hidden and the canvas went blank. Carry `measured`
+  // across, and apply the library's own dimension changes.
+  const [nodes, setNodes] = useState<Node[]>([])
+  useEffect(() => {
+    setNodes((prev) => {
+      const old = new Map(prev.map((n) => [n.id, n]))
+      return graphNodes.map((n) => {
+        const before = old.get(n.id)
+        return before?.measured ? { ...n, measured: before.measured } : n
+      })
+    })
+  }, [graphNodes])
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => setNodes((ns) => applyNodeChanges(changes, ns)),
+    []
+  )
 
   const edges = useMemo<Edge[]>(() => {
     const keys = new Set(agents.map((a) => a.key))
@@ -429,6 +455,7 @@ export default function App(): JSX.Element {
       <div className="canvas">
         <ReactFlow
           nodes={nodes}
+          onNodesChange={onNodesChange}
           edges={edges}
           nodeTypes={nodeTypes}
           onConnect={onConnect}
