@@ -4,6 +4,8 @@
 import { shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
+import { renderTemplate } from '../shared/blueprint'
+import { MERGE_TRAIN_PATTERN, SUPERVISOR_PATTERN } from '../shared/patterns'
 
 const run = promisify(execFile)
 
@@ -116,7 +118,8 @@ export function resumeSession(sessionId: string, cwd: string, task: string): Spa
 /**
  * Spawns an agent whose job is to land the listed branches on the base
  * branch, resolving conflicts as it goes. The merging itself is done by a
- * real Claude Code agent in the repo - this only writes the brief.
+ * real Claude Code agent in the repo; the brief comes from the shipped
+ * "Merge train" blueprint, not from text hard-coded here.
  */
 export function spawnMergeOrchestrator(
   projectPath: string,
@@ -126,25 +129,13 @@ export function spawnMergeOrchestrator(
   if (!projectPath) return { ok: false, error: 'No project path.' }
   if (!branches.length) return { ok: false, error: 'Nothing to merge.' }
 
-  const task = [
-    `You are the merge orchestrator for this repository.`,
-    ``,
-    `Land these branches on "${baseBranch}", one at a time, oldest first:`,
-    ...branches.map((b) => `  - ${b}`),
-    ``,
-    `For each branch:`,
-    `1. git checkout ${baseBranch} && git merge <branch>`,
-    `2. If there are conflicts, read both sides and resolve them so the`,
-    `   intent of BOTH changes survives. Never resolve by blindly taking one`,
-    `   side, and never delete another agent's work to make a conflict go away.`,
-    `3. If the repo has tests or a typecheck/build script, run it after each`,
-    `   merge and fix anything the merge broke before moving on.`,
-    `4. Commit the merge with a message naming the branch you landed.`,
-    ``,
-    `Do not force-push, do not rebase shared history, and do not delete`,
-    `branches. If a branch is too conflicted to land safely, stop, leave it`,
-    `unmerged, and report why.`
-  ].join('\n')
+  const node = MERGE_TRAIN_PATTERN.nodes.find((n) => n.kind === 'merge')
+  if (node?.kind !== 'merge') return { ok: false, error: 'The Merge train blueprint is missing its merge node.' }
+
+  const task = renderTemplate(node.config.resolverPrompt, {
+    baseBranch,
+    branches: branches.map((b) => `  - ${b}`).join('\n')
+  })
 
   return launch(['--bg', '--name', 'Orchestrator', task], projectPath, {
     AGENT_SHIP_NAME: 'Orchestrator',
@@ -153,12 +144,17 @@ export function spawnMergeOrchestrator(
   })
 }
 
-/** Spawns an orchestrator that delegates the given briefs to sub-agents. */
+/** Spawns an orchestrator that delegates the given brief to sub-agents. The
+ *  prompt template is the shipped "Supervisor" blueprint's agent node. */
 export function spawnOrchestrator(projectPath: string, brief: string): SpawnResult {
   if (!projectPath || !brief) return { ok: false, error: 'A project and brief are required.' }
-  return launch(['--bg', '--name', 'Orchestrator', brief], projectPath, {
-    AGENT_SHIP_NAME: 'Orchestrator',
-    AGENT_SHIP_ROLE: 'Orchestrator',
+
+  const node = SUPERVISOR_PATTERN.nodes.find((n) => n.kind === 'agent')
+  if (node?.kind !== 'agent') return { ok: false, error: 'The Supervisor blueprint is missing its agent node.' }
+
+  return launch(['--bg', '--name', node.config.role, renderTemplate(node.config.prompt, { brief })], projectPath, {
+    AGENT_SHIP_NAME: node.config.role,
+    AGENT_SHIP_ROLE: node.config.role,
     AGENT_SHIP_TASK: brief
   })
 }

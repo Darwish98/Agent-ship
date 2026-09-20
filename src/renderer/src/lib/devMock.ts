@@ -10,6 +10,7 @@ import type {
   SessionSummary,
   Settings
 } from '../../../preload'
+import { parseBlueprint, type Blueprint } from '../../../shared/schema'
 
 const projects: Project[] = [
   { id: 'p1', name: 'frontend-app', path: 'C:/dev/frontend-app' },
@@ -146,6 +147,11 @@ export function installDevMock(): void {
     for (const l of listeners) l(event)
   }
 
+  // In-memory stand-in for <repo>/.agentship/flows, validated by the same
+  // schema the real store uses.
+  const flowStore = new Map<string, Blueprint>()
+  const flowKey = (projectId: string, slug: string): string => `${projectId}/${slug}`
+
   const api: AgentShipApi = {
     onAgentEvent: (cb) => {
       listeners.push(cb)
@@ -192,6 +198,33 @@ export function installDevMock(): void {
               { branch: 'test/regression-suite', ahead: 1 }
             ]
           : [],
+    listFlows: async (projectId) =>
+      [...flowStore]
+        .filter(([k]) => k.startsWith(`${projectId}/`))
+        .map(([k, b]) => ({
+          slug: k.slice(projectId.length + 1),
+          name: b.name,
+          description: b.description,
+          nodeCount: b.nodes.length
+        })),
+    loadFlow: async (projectId, slug) => {
+      const b = flowStore.get(flowKey(projectId, slug))
+      return b ? { ok: true, blueprint: b } : { ok: false, error: 'No such flow.' }
+    },
+    saveFlow: async (projectId, slug, blueprint) => {
+      const parsed = parseBlueprint(blueprint)
+      if (!parsed.ok) return { ok: false, error: parsed.error }
+      flowStore.set(flowKey(projectId, slug), parsed.blueprint)
+      return { ok: true, blueprint: parsed.blueprint }
+    },
+    deleteFlow: async (projectId, slug) => {
+      flowStore.delete(flowKey(projectId, slug))
+      return { ok: true }
+    },
+    logError: async (message) => {
+      console.error('[renderer error]', message)
+      return '(dev mock: no log file)'
+    },
     spawnAgent: async () => ({ ok: true }),
     resumeSession: async () => ({ ok: true }),
     spawnOrchestrator: async () => ({ ok: true }),

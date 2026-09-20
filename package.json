@@ -13,7 +13,9 @@
     "postinstall": "node scripts/install-hooks.js --auto",
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:win": "electron-vite build && electron-builder --win",
-    "dist:linux": "electron-vite build && electron-builder --linux"
+    "dist:linux": "electron-vite build && electron-builder --linux",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs"
   },
   "author": "",
   "license": "MIT",
@@ -58,7 +60,8 @@
   "dependencies": {
     "@xyflow/react": "^12.11.6",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",
@@ -69,6 +72,7 @@
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "^7.0.2",
-    "vite": "^7.3.6"
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
   }
 }

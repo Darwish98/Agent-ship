@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { Blueprint } from '../shared/schema'
 
 export interface Project {
   id: string
@@ -68,6 +69,16 @@ export interface AgentEvent {
   timestamp: number
 }
 
+export interface FlowSummary {
+  slug: string
+  name: string
+  description: string
+  nodeCount: number
+  error?: string
+}
+
+export type FlowResult<T> = ({ ok: true } & T) | { ok: false; error: string }
+
 export interface SpawnResult {
   ok: boolean
   error?: string
@@ -107,6 +118,20 @@ const api = {
   gitState: (cwd: string): Promise<GitState> => ipcRenderer.invoke('git:state', cwd),
   unmergedBranches: (cwd: string): Promise<{ branch: string; ahead: number }[]> =>
     ipcRenderer.invoke('git:unmergedBranches', cwd),
+
+  listFlows: (projectId: string): Promise<FlowSummary[]> =>
+    ipcRenderer.invoke('flows:list', projectId),
+  loadFlow: (projectId: string, slug: string): Promise<FlowResult<{ blueprint: Blueprint }>> =>
+    ipcRenderer.invoke('flows:load', { projectId, slug }),
+  saveFlow: (
+    projectId: string,
+    slug: string,
+    blueprint: Blueprint
+  ): Promise<FlowResult<{ blueprint: Blueprint }>> =>
+    ipcRenderer.invoke('flows:save', { projectId, slug, blueprint }),
+  deleteFlow: (projectId: string, slug: string): Promise<FlowResult<object>> =>
+    ipcRenderer.invoke('flows:delete', { projectId, slug }),
+  logError: (message: string): Promise<string> => ipcRenderer.invoke('log:error', message),
 
   spawnAgent: (projectPath: string, role: string, task: string): Promise<SpawnResult> =>
     ipcRenderer.invoke('agent:spawn', { projectPath, role, task }),

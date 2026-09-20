@@ -9,8 +9,10 @@ import {
   spawnOrchestrator,
   stopAgent
 } from './agents'
+import { deleteFlow, listFlows, loadFlow, saveFlow } from './flows'
 import { gitState, unmergedBranches } from './git'
 import { installHooks } from './hooks'
+import { installCrashLogging, log, logPath } from './log'
 import { startServer, type AgentEvent } from './server'
 import * as shipyard from './shipyard'
 import { listSessions, weeklyUsage } from './transcripts'
@@ -18,6 +20,7 @@ import { listSessions, weeklyUsage } from './transcripts'
 let mainWindow: BrowserWindow | null = null
 
 app.setName('Agent Ship')
+installCrashLogging()
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -56,6 +59,8 @@ function resolveHookCommand(): string {
 }
 
 function ensureHooksInstalled(): void {
+  // Test runs (scripts/smoke.mjs) must not touch the user's global settings.
+  if (process.env.AGENT_SHIP_SKIP_HOOKS) return
   try {
     const result = installHooks(resolveHookCommand())
     if (!result.ok && result.reason === 'claude-not-found') {
@@ -123,6 +128,23 @@ function registerIpcHandlers(): void {
   ipcMain.handle('links:set', (_evt, links: shipyard.OrchestratorLink[]) =>
     shipyard.saveLinks(userDataDir(), links)
   )
+
+  ipcMain.handle('flows:list', (_evt, projectId: string) => listFlows(userDataDir(), projectId))
+  ipcMain.handle('flows:load', (_evt, a: { projectId: string; slug: string }) =>
+    loadFlow(userDataDir(), a.projectId, a.slug)
+  )
+  ipcMain.handle('flows:save', (_evt, a: { projectId: string; slug: string; blueprint: unknown }) =>
+    saveFlow(userDataDir(), a.projectId, a.slug, a.blueprint)
+  )
+  ipcMain.handle('flows:delete', (_evt, a: { projectId: string; slug: string }) =>
+    deleteFlow(userDataDir(), a.projectId, a.slug)
+  )
+
+  // The renderer's error boundary reports here so a crash leaves a trace.
+  ipcMain.handle('log:error', (_evt, message: string) => {
+    log.error('renderer', String(message).slice(0, 8_000))
+    return logPath()
+  })
 
   ipcMain.handle('sessions:list', () => listSessions())
   ipcMain.handle('sessions:running', () => listRunningAgents())
