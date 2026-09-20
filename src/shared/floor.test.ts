@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveFloor, HOOK_FRESH_MS, HOOK_RECENT_MS, sessionActivity, verificationOf, type BranchLite, type SessionLite } from './floor'
+import { deriveFloor, whoClearedIt, HOOK_FRESH_MS, HOOK_RECENT_MS, sessionActivity, verificationOf, type BranchLite, type SessionLite } from './floor'
 import { fromPattern, PATTERNS } from './patterns'
 import { foldRun, type RunEvent, type RunView } from './runs'
 
@@ -366,5 +366,125 @@ describe('is a live session working, blocked, or finished? (sessionActivity)', (
 
   it('carries what a blocked session is waiting on', () => {
     expect(sessionActivity({ now: t, status: 'waiting', waitingFor: 'sandbox request' }).waitingFor).toBe('sandbox request')
+  })
+})
+
+describe('landing a session\'s uncommitted work, and work you committed yourself', () => {
+  const checkout = '/repo'
+
+  /** A landing started from a session's checkout (what Commit & land creates). */
+  function commitLandRun(opts: { end?: 'passed' | 'failed' | null; upTo?: 'test' | 'merge' | 'verify' | 'land'; project?: string; startedAt?: number; cwd?: string }): RunView {
+    const r = landRun({ branch: 'agentship/work-1', project: opts.project ?? 'p1', upTo: opts.upTo, end: opts.end ?? null, startedAt: opts.startedAt })
+    r.inputs = { ...r.inputs, checkout: opts.cwd ?? checkout }
+    return r
+  }
+
+  it('shows a session\'s pending work as Ready, and the landing as ONE card (the branch), not two', () => {
+    const s = session({ live: true, working: false, dirtyFiles: 11, cwd: checkout })
+    const before = derive({ sessions: [s] })
+    expect(before.byLane.ready.map((i) => i.kind)).toEqual(['session'])
+
+    const lr = commitLandRun({ upTo: 'merge', end: null })
+    const during = derive({ sessions: [s], runs: [lr], branches: [branch({ branch: 'agentship/work-1' })] })
+    expect(during.byLane.ready).toHaveLength(0) // the session card steps aside
+    expect(during.byLane.running).toHaveLength(1)
+    expect(during.byLane.running[0].kind).toBe('branch')
+    expect(states(during.byLane.running[0])).toBe('build:passed test:passed merge:running land:idle')
+  })
+
+  it('once landed, the session\'s own card shows the real pipeline, lit by what Agent Ship did', () => {
+    const s = session({ live: true, working: false, dirtyFiles: 0, cwd: checkout })
+    const lr = commitLandRun({ end: 'passed', startedAt: NOW - 60_000 })
+    const f = derive({ sessions: [s], runs: [lr] })
+    const card = f.byLane.done.find((i) => i.kind === 'session')!
+    expect(states(card)).toBe('build:passed test:passed merge:passed land:passed')
+    expect(card.subtitle).toBe('Tested, merged and landed by Agent Ship')
+  })
+
+  it('does not attribute a landing to a session in a different checkout or project', () => {
+    const other = session({ live: true, working: false, cwd: '/somewhere-else' })
+    const lr = commitLandRun({ end: 'passed' })
+    expect(states(derive({ sessions: [other], runs: [lr] }).byLane.done.find((i) => i.kind === 'session')!)).toBe('build:passed test:skipped merge:skipped land:skipped')
+    const otherProject = session({ live: true, working: false, cwd: checkout, projectId: 'p2' })
+    expect(states(derive({ sessions: [otherProject], runs: [lr] }).byLane.done.find((i) => i.kind === 'session')!)).toBe('build:passed test:skipped merge:skipped land:skipped')
+  })
+
+  it('a session in a subfolder of the landed checkout still matches it', () => {
+    const s = session({ live: true, working: false, cwd: '/repo/packages/app' })
+    const lr = commitLandRun({ end: 'passed' })
+    expect(states(derive({ sessions: [s], runs: [lr] }).byLane.done.find((i) => i.kind === 'session')!)).toBe('build:passed test:passed merge:passed land:passed')
+  })
+
+  it('work you committed and merged yourself is shown as done BY HAND, not as tested or as nothing', () => {
+    const s = session({ live: true, working: false, handledAt: NOW - 1000 })
+    const f = derive({ sessions: [s] })
+    const card = f.byLane.done[0]
+    expect(states(card)).toBe('build:passed test:skipped merge:manual land:manual')
+    expect(card.pipeline[1].note).toMatch(/No test was run through Agent Ship/)
+    expect(card.pipeline[2].note).toMatch(/yourself/)
+  })
+
+  it('but new uncommitted work after that is pending again, not "by hand"', () => {
+    const s = session({ live: true, working: false, handledAt: NOW - 1000, dirtyFiles: 3 })
+    expect(states(derive({ sessions: [s] }).byLane.ready[0])).toBe('build:passed test:idle merge:idle land:idle')
+  })
+
+  it('a by-hand commit noticed AFTER an earlier landing is shown as by hand, not as that landing', () => {
+    const lr = commitLandRun({ end: 'passed', startedAt: NOW - 3 * HOUR })
+    const s = session({ live: true, working: false, cwd: checkout, handledAt: NOW - 1000 })
+    expect(states(derive({ sessions: [s], runs: [lr] }).byLane.done.find((i) => i.kind === 'session')!)).toBe('build:passed test:skipped merge:manual land:manual')
+  })
+
+  it('a landing newer than any by-hand observation is what the card shows', () => {
+    const lr = commitLandRun({ end: 'passed', startedAt: NOW - 60_000 })
+    const s = session({ live: true, working: false, cwd: checkout, handledAt: NOW - 3 * HOUR })
+    expect(states(derive({ sessions: [s], runs: [lr] }).byLane.done.find((i) => i.kind === 'session')!)).toBe('build:passed test:passed merge:passed land:passed')
+  })
+
+  it('a landing is credited to the session that asked for it, not to others in the same folder', () => {
+    const mine = session({ live: true, working: false, cwd: checkout })
+    const sibling = session({ live: true, working: false, cwd: checkout })
+    const lr = commitLandRun({ end: 'passed' })
+    lr.inputs = { ...lr.inputs, session: mine.sessionId }
+    const f = derive({ sessions: [mine, sibling], runs: [lr] })
+    const byId = (id: string) => f.byLane.done.find((i) => i.session?.sessionId === id)!
+    expect(states(byId(mine.sessionId))).toBe('build:passed test:passed merge:passed land:passed')
+    expect(states(byId(sibling.sessionId))).toBe('build:passed test:skipped merge:skipped land:skipped')
+  })
+})
+
+describe('who removed a session\'s uncommitted work? (whoClearedIt)', () => {
+  const ep = (over: Partial<{ head: string; dirty: number; ahead: number; since: number }> = {}) => ({ head: 'aaa', dirty: 5, ahead: 0, since: NOW - 10 * 60_000, ...over })
+  const landing = (session: string, endedMsAgo: number): RunView => {
+    const r = landRun({ end: 'passed', startedAt: NOW - endedMsAgo - 5000 })
+    r.inputs = { ...r.inputs, session }
+    return r
+  }
+
+  it('a landing for this session that finished after the episode began explains it', () => {
+    expect(whoClearedIt(ep(), 'bbb', [landing('s1', 60_000)], 's1')).toBe('landing')
+  })
+
+  it('a stale poll that "saw" the work again after the landing ended does not change that (the bug this replaced)', () => {
+    // The episode began 10 minutes ago; the landing ended 1 minute ago. What time the last poll
+    // still showed the files is irrelevant: only when the episode began matters.
+    expect(whoClearedIt(ep({ since: NOW - 10 * 60_000 }), 'bbb', [landing('s1', 1_000)], 's1')).toBe('landing')
+  })
+
+  it('an OLD landing does not explain NEW work you then committed yourself', () => {
+    // A landing finished 2 hours ago; a fresh episode of pending work began 5 minutes ago.
+    expect(whoClearedIt(ep({ since: NOW - 5 * 60_000 }), 'bbb', [landing('s1', 2 * 3_600_000)], 's1')).toBe('hand')
+  })
+
+  it('a landing made for a different session does not count', () => {
+    expect(whoClearedIt(ep(), 'bbb', [landing('someone-else', 60_000)], 's1')).toBe('hand')
+  })
+
+  it('unmerged commits that vanished count as merged by hand when no landing did it', () => {
+    expect(whoClearedIt(ep({ dirty: 0, ahead: 3 }), 'aaa', [], 's1')).toBe('hand')
+  })
+
+  it('files that disappeared with HEAD unchanged were discarded, not committed', () => {
+    expect(whoClearedIt(ep(), 'aaa', [], 's1')).toBe('none')
   })
 })

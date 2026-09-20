@@ -408,6 +408,11 @@
   font-weight: 600;
 }
 
+.fc-landed {
+  color: var(--ok);
+  font-weight: 600;
+}
+
 .fc-pending {
   margin: 0;
   padding: 3px 8px;
@@ -1235,6 +1240,18 @@ button.pl-stage {
 
 .pl-awaiting .pl-dot {
   background: var(--warn);
+}
+
+.pl-manual {
+  color: var(--text-muted);
+  border-style: dashed;
+  border-color: var(--ok);
+}
+
+.pl-manual .pl-dot {
+  background: transparent;
+  color: var(--ok);
+  border: 1.5px solid var(--ok);
 }
 
 .pl-skipped {

@@ -47,6 +47,7 @@ export interface RunningAgent {
 export interface GitState {
   isRepo: boolean
   branch: string
+  head: string
   baseBranch: string
   ahead: number
   dirtyFiles: number
@@ -93,6 +94,20 @@ export type LandPlan =
       testSource: string
       baseCheckedOutAt: string | null
       baseHasUncommittedChanges: boolean
+    }
+  | { ok: false; error: string }
+
+export type WorkPlan =
+  | {
+      ok: true
+      checkout: string
+      currentBranch: string
+      baseBranch: string
+      files: number
+      /** on-base: the session works directly on the base branch. on-branch: on a feature branch. */
+      mode: 'on-base' | 'on-branch'
+      testCommand: string
+      testSource: string
     }
   | { ok: false; error: string }
 
@@ -158,6 +173,17 @@ const api = {
   startRun: (projectId: string, slug: string, inputs: Record<string, string>): Promise<StartRunResult> =>
     ipcRenderer.invoke('runs:start', { projectId, slug, inputs }),
   landPlan: (projectId: string, branch: string): Promise<LandPlan> => ipcRenderer.invoke('land:plan', { projectId, branch }),
+  workPlan: (projectId: string, cwd: string): Promise<WorkPlan> => ipcRenderer.invoke('land:workPlan', { projectId, cwd }),
+  landWork: (
+    projectId: string,
+    cwd: string,
+    sessionId: string,
+    baseBranch: string,
+    testCommand: string,
+    resolveConflicts: boolean,
+    message: string
+  ): Promise<StartRunResult> =>
+    ipcRenderer.invoke('runs:landWork', { projectId, cwd, sessionId, baseBranch, testCommand, resolveConflicts, message }),
   landBranch: (
     projectId: string,
     branch: string,

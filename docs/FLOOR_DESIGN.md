@@ -125,3 +125,19 @@ The first version treated "the Claude process is alive" as "the agent is working
 5. **Anything else** (missing, or a value this build does not know): only *evidence* counts. A tool hook in the last 60 s means working; otherwise it is idle. Never a blind guess.
 
 What follows from the verdict: working stays in **Running** with Build lit; blocked goes to **Needs you**; idle with uncommitted files or unmerged commits goes to **Ready to land** with Build done and the later stages waiting ("✎ 8 uncommitted files"); idle with nothing left rests in **Done**. When several sessions share a checkout, the most recently active one owns its uncommitted files.
+
+## 9. What "uncommitted files" means, and how it gets landed (added after first use)
+
+A finished session that left files behind sits in **Ready to land** with "✎ N uncommitted files". That is a *different state* from a branch waiting to land, and it has its own next step:
+
+| The card says | What exists | The next step |
+|---|---|---|
+| **✎ N uncommitted files** (a session) | Loose changes in a checkout. No commit, no branch. | **Commit & land…** |
+| **N commits · unverified / ✓ tests passed** (a branch) | A real branch ahead of the base. | **Land…** |
+| **Landing…** | A landing run is testing or merging it. | (Stop landing) |
+
+**Commit & land** turns the first into the second, then runs the second. The pipeline strip reads the same throughout: Build ✓ while it is waiting, then Test, Merge and Land light up as they happen.
+
+**Work you finish by hand.** If you commit and merge yourself, the card is not left blank: Build ✓, Test dashed (no test ran through Agent Ship), and Merge and Land a distinct dashed-green ✓ meaning *done by hand, outside Agent Ship*. That state is deliberately not "passed": it never claims Agent Ship verified anything.
+
+**Why a session on `main` is special.** Landing normally moves the base branch. When the work is *already in the base branch's checkout*, committing it straight to `main` would put untested work there. So the files are snapshotted to a new branch, tested and merged in scratch copies, and `main` is advanced last; the working files are then simply *adopted* into that commit, allowed only if they are identical to what was tested.

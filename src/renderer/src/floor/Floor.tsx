@@ -9,6 +9,7 @@ import { useNav } from '../nav'
 import { useRuns } from '../runs/RunsProvider'
 import type { Room } from '../types'
 import { WorkCard, type FloorActions } from './Cards'
+import { CommitLandDialog, type CommitLandTarget } from './CommitLandDialog'
 import { Drawer } from './Drawer'
 import { LandDialog, type LandTarget } from './LandDialog'
 import { useFloorData } from './useFloorData'
@@ -36,6 +37,7 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
   const [showStale, setShowStale] = useState(false)
   const [launchOpen, setLaunchOpen] = useState<string | null>(null)
   const [landing, setLanding] = useState<LandTarget | null>(null)
+  const [committing, setCommitting] = useState<CommitLandTarget | null>(null)
 
   const roomById = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms])
   const visible = useCallback((it: WorkItem): boolean => project === 'all' || it.projectId === project, [project])
@@ -93,6 +95,21 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
         })
       },
       stopRun: (runId) => void cancel(runId),
+      landWork: async (item) => {
+        const s = item.session
+        const room = roomById.get(item.projectId)
+        if (!s || !room) return
+        let projectId = room.id
+        if (room.ephemeral) {
+          const norm = (p: string): string => p.replace(/[\\/]+/g, '/').toLowerCase()
+          const list = await window.agentShip.addProjectPath(room.path)
+          const added = list.find((p) => norm(p.path) === norm(room.path))
+          if (!added) return
+          await world.refreshProjects()
+          projectId = added.id
+        }
+        setCommitting({ projectId, projectName: room.name, cwd: s.cwd, sessionId: s.sessionId, sessionName: s.name })
+      },
       land: async (item) => {
         const b = item.branch
         const room = roomById.get(item.projectId)
@@ -367,6 +384,7 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
 
       {dialog && <TaskDialog spec={dialog} onClose={() => setDialog(null)} />}
       {landing && <LandDialog target={landing} onClose={() => setLanding(null)} />}
+      {committing && <CommitLandDialog target={committing} onClose={() => setCommitting(null)} />}
     </div>
   )
 }

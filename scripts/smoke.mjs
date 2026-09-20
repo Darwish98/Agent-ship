@@ -339,6 +339,45 @@ try {
   check(await waitFor(() => evalJs(`[...document.querySelectorAll('.fc-lane-done')].some(e => e.textContent.includes('Landed'))`), 20000), 'the finished landing shows in Done as "Landed"')
   await shot('5c-landed')
 
+  // --- 2c. Commit & land a session's uncommitted work -------------------------------
+  console.log('Commit & land')
+  const stripOf = (lane) =>
+    evalJs(`[...(${crew0(lane)}?.querySelectorAll('.pl-stage') ?? [])].map(e => e.className.match(/pl-(passed|idle|running|skipped|failed|manual|awaiting)/)?.[1]).join()`)
+  check(await waitFor(() => inLane('ready'), 60000), 'crew0 rests in Ready with the files it left uncommitted')
+  check(await evalJs(`(${crew0('ready')}?.textContent ?? '').includes('Commit & land')`), 'and its card has a Commit & land button (the step that was missing)')
+  await evalJs(`${crew0('ready')}?.querySelector('.btn-primary')?.click()`)
+  check(await waitFor(() => count('.rdlg'), 8000), 'the dialog opened')
+  await waitFor(() => count('.rdlg-plan'))
+  const cl = (await evalJs(`document.querySelector('.rdlg-plan')?.innerText ?? ''`)).replace(/\s+/g, ' ')
+  check(/Snapshot/.test(cl) && /new branch/.test(cl) && /nothing untested is committed/.test(cl), 'working on main, it snapshots onto a NEW branch instead of committing untested work to main')
+  check(/Your files do not change/.test(cl) && /edit a file while this runs/.test(cl), 'it says your files are untouched, and what happens if you edit during it')
+  const testCmd2 = `node -e "process.exit(require('fs').existsSync('wip-1.txt')?0:1)"`
+  await evalJs(`(() => { const i = [...document.querySelectorAll('.rdlg input')].find(x => (x.placeholder || '').includes('npm test')); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(i, ${JSON.stringify(testCmd2)}); i.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+  await shot('5d-commit-land')
+  const tipBefore = git('rev-parse', 'main')
+  const wip1 = fs.readFileSync(path.join(project, 'wip-1.txt'), 'utf8')
+  check(await clickText('.rdlg .btn-primary', 'Commit & land'), 'started')
+  check(await waitFor(() => git('rev-parse', 'main') !== tipBefore, 60000), 'main moved')
+  const onMain = git('ls-tree', '-r', '--name-only', 'main')
+  check(onMain.includes('wip-1.txt') && onMain.includes('wip-2.txt'), 'main now contains what the session left uncommitted')
+  check(fs.readFileSync(path.join(project, 'wip-1.txt'), 'utf8') === wip1 && fs.existsSync(path.join(project, 'wip-2.txt')), 'and your files are exactly as they were')
+  check(!git('status', '--porcelain').split('\n').some((l) => l.includes('wip-')), 'git now sees them as committed')
+  check(await waitFor(() => inLane('done'), 60000), 'crew0 rests in Done')
+  check((await stripOf('done')) === 'passed,passed,passed,passed', "and its card shows the real pipeline Agent Ship ran: built, tested, merged, landed")
+  check(await evalJs(`(${crew0('done')}?.textContent ?? '').includes('landed by Agent Ship')`), 'labelled as landed by Agent Ship')
+  await shot('5e-committed-landed')
+
+  // --- 2d. Work you commit yourself is not shown as nothing --------------------------
+  console.log('Work committed by hand')
+  fs.writeFileSync(path.join(project, 'hand.txt'), 'written by the session\n')
+  check(await waitFor(() => inLane('ready'), 60000), 'new uncommitted work puts crew0 back in Ready (pending again)')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'committed by hand')
+  check(await waitFor(() => inLane('done'), 60000), 'after you commit it yourself, it rests in Done')
+  check((await stripOf('done')) === 'passed,skipped,manual,manual', 'the pipeline says so: Build done, no test through Agent Ship, Merge and Land done BY HAND')
+  check(await evalJs(`(${crew0('done')}?.querySelector('.pl-manual')?.title ?? '').includes('by hand')`), 'and the by-hand stages explain themselves')
+  await shot('5f-by-hand')
+
   // --- 3. Blueprint editor ------------------------------------------------------
   console.log('Blueprint editor')
   check(await clickText('.rail-btn', 'Blueprints'), 'switched to the Blueprints view')

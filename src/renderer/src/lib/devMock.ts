@@ -98,6 +98,7 @@ const sessions: SessionSummary[] = [
 const gitStates: Record<string, GitState> = {
   'C:/dev/frontend-app': {
     isRepo: true,
+    head: 'a1b2c3d',
     branch: 'feat/dashboard-redesign',
     baseBranch: 'main',
     ahead: 3,
@@ -106,6 +107,7 @@ const gitStates: Record<string, GitState> = {
   },
   'C:/dev/api-server': {
     isRepo: true,
+    head: 'a1b2c3d',
     branch: 'feat/auth-middleware',
     baseBranch: 'main',
     ahead: 5,
@@ -114,6 +116,7 @@ const gitStates: Record<string, GitState> = {
   },
   'C:/dev/infra-tools': {
     isRepo: true,
+    head: 'a1b2c3d',
     branch: 'ops/ci-pipeline',
     baseBranch: 'main',
     ahead: 0,
@@ -246,6 +249,7 @@ export function installDevMock(): void {
       gitStates[cwd] ?? {
         isRepo: false,
         branch: '',
+        head: '',
         baseBranch: '',
         ahead: 0,
         dirtyFiles: 0,
@@ -268,6 +272,20 @@ export function installDevMock(): void {
       return []
     },
     branchSummary: async () => ({ files: 7, added: 212, removed: 34 }),
+    workPlan: async (_projectId, cwd) => ({
+      ok: true,
+      checkout: cwd,
+      currentBranch: 'main',
+      baseBranch: 'main',
+      files: 11,
+      mode: 'on-base',
+      testCommand: 'npm test',
+      testSource: 'package.json "test" script'
+    }),
+    landWork: async (projectId, _cwd, _sessionId, base, testCommand, resolveConflicts) => {
+      const project = projects.find((x) => x.id === projectId)!
+      return { ok: true, runId: simulateLand(project, buildLandBlueprint({ branch: 'agentship/work-demo', base, testCommand, resolveConflicts }), 'agentship/work-demo') }
+    },
     landPlan: async () => ({
       ok: true,
       baseBranch: 'main',

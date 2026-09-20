@@ -437,16 +437,33 @@ export class RunEngine {
           if (!integ) return failed('Nothing to land: a Merge step has to run first.')
           if (integ.base !== base) return failed(`This Land step targets ${base} but the merge was into ${integ.base}.`)
           const holder = await git.worktreeHolding(a.projectPath, base)
+          const moved = `${base} moved while this was landing, so it was left alone. Run it again.`
           if (holder) {
             // The branch is checked out somewhere, so it has to move together with its files.
-            if (!(await git.isClean(holder))) {
-              return failed(`${base} is checked out in ${holder} and has uncommitted changes. Commit or stash them, then land again. Nothing was changed.`)
-            }
-            if (!(await git.fastForward(holder, integ.sha))) {
-              return failed(`${base} moved while this was landing, so it was left alone. Run it again.`)
+            //
+            // Case 1, the ordinary one: nothing uncommitted is in the way, so fast-forward.
+            // Case 2 (Commit & land, a session working directly on the base branch): the
+            // uncommitted files in that checkout ARE the work being landed. Only if they
+            // are byte-identical to the tested result may the branch move to it and the
+            // index be re-pointed, which changes no file and loses nothing. This is also
+            // what a fast-forward needs when the session's new files are untracked and
+            // would be "overwritten" by it.
+            const ff = (await git.isClean(holder)) && (await git.fastForward(holder, integ.sha))
+            if (!ff) {
+              if (!(await git.workingTreeMatches(holder, integ.sha))) {
+                // Say what is actually true: did the branch move, or are those files not the work being landed?
+                const nowTip = await git.tip(a.projectPath, `refs/heads/${base}`)
+                return failed(
+                  nowTip !== integ.baseTip
+                    ? moved
+                    : `${base} is checked out in ${holder} with uncommitted changes that are not the work being landed (you may have edited files while it ran). Commit or stash them, then land again. Nothing was changed.`
+                )
+              }
+              if (!(await git.updateBranch(a.projectPath, base, integ.sha, integ.baseTip))) return failed(moved)
+              await git.resetIndexToHead(holder)
             }
           } else if (!(await git.updateBranch(a.projectPath, base, integ.sha, integ.baseTip))) {
-            return failed(`${base} moved while this was landing, so it was left alone. Run it again.`)
+            return failed(moved)
           }
           emit({ type: 'node.finished', at: this.now(), runId, nodeId: node.id, attempt, status: 'passed', costUsd: 0, tokens: 0, summary: `${label}: ${base} is now at ${integ.sha.slice(0, 7)}.` })
           node = outEdge(node, 'next')

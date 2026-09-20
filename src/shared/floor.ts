@@ -30,6 +30,8 @@ export interface SessionLite {
   /** Uncommitted files and unmerged commits in this session's checkout. */
   dirtyFiles: number
   aheadCommits: number
+  /** When we noticed that work it held was committed by you, not by a landing (see useHandledByHand). */
+  handledAt?: number
   branch: string
   contextTokens: number
   contextLimit: number
@@ -59,7 +61,8 @@ export type Verification =
   | { state: 'unverified' }
 
 export type StageId = 'build' | 'test' | 'merge' | 'land'
-export type StageState = NodeState | 'skipped'
+/** `manual`: it happened, but by your hand and outside Agent Ship. Not the same as passed. */
+export type StageState = NodeState | 'skipped' | 'manual'
 
 /** One step of a task's life. A task is often several real sessions and runs
  *  (the author, its gate, the landing run); the four stages tell them as one
@@ -191,6 +194,14 @@ export function pipelineForSession(s: SessionLite): PipelineStage[] {
   }
   const done = s.live ? 'Finished its turn and is waiting for your next prompt.' : 'Finished.'
   const pending = pendingWork(s)
+  if (!pending && s.handledAt !== undefined) {
+    return [
+      stage('build', 'passed', done),
+      stage('test', 'skipped', 'No test was run through Agent Ship.'),
+      stage('merge', 'manual', 'You committed and merged this yourself, outside Agent Ship.'),
+      stage('land', 'manual', 'It is in your code now, put there by hand.')
+    ]
+  }
   if (!pending) {
     return [
       stage('build', 'passed', done),
@@ -384,18 +395,65 @@ export function deriveFloor(input: FloorInput): FloorModel {
     if (!cur || s.lastActive > cur.lastActive) owner.set(s.cwd, s)
   }
 
+  // A landing started from a session's uncommitted work remembers which checkout
+  // it came from, so the session's own card can show that landing's pipeline.
+  const normPath = (p: string): string => p.replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase()
+  const checkoutLands = runs
+    .filter((r) => r.flowSlug === LAND_FLOW && r.inputs.checkout)
+    .sort((a, b) => a.startedAt - b.startedAt)
+  const landOf = (s: SessionLite): RunView | undefined => {
+    const w = normPath(s.cwd)
+    let found: RunView | undefined
+    for (const r of checkoutLands) {
+      if (r.projectId !== s.projectId) continue
+      // Tied to the session that asked for it. Sessions sharing a folder are not
+      // all credited with one landing.
+      if (r.inputs.session) {
+        if (r.inputs.session === s.sessionId) found = r
+        continue
+      }
+      const c = normPath(r.inputs.checkout)
+      if (w === c || w.startsWith(`${c}/`) || c.startsWith(`${w}/`)) found = r
+    }
+    return found
+  }
+
   let hiddenOlder = 0
   for (const raw of sessions) {
     const owns = owner.get(raw.cwd)?.sessionId === raw.sessionId
     const s: SessionLite = owns ? raw : { ...raw, dirtyFiles: 0, aheadCommits: 0 }
     if (runSessionIds.has(s.sessionId)) continue // shown inside its run
-    const base = { id: `session:${s.sessionId}`, kind: 'session' as const, projectId: s.projectId, title: s.name, subtitle: s.task, updatedAt: s.lastActive, session: s, pipeline: pipelineForSession(s), authors: [] as string[], authorSessions: [] as SessionLite[] }
+    const landing = landOf(s)
+    const landingActive = Boolean(landing && isActive(landing.status))
+    // Landed through Agent Ship recently: its real pipeline, not a guess.
+    // ...unless you have committed something by hand since (a newer observation wins).
+    const landedHere =
+      landing &&
+      landing.status === 'passed' &&
+      !pendingWork(s) &&
+      now - (landing.endedAt ?? landing.startedAt) <= DONE_WINDOW_MS &&
+      !(s.handledAt !== undefined && s.handledAt > (landing.endedAt ?? landing.startedAt))
+    const base = {
+      id: `session:${s.sessionId}`,
+      kind: 'session' as const,
+      projectId: s.projectId,
+      title: s.name,
+      subtitle: landedHere ? 'Tested, merged and landed by Agent Ship' : s.task,
+      updatedAt: s.lastActive,
+      session: s,
+      pipeline: landedHere ? pipelineForBranch({ state: 'unverified' }, [s.name], landing) : pipelineForSession(s),
+      landRun: landedHere ? landing : undefined,
+      authors: [] as string[],
+      authorSessions: [] as SessionLite[]
+    }
     if (s.live && s.needsInput) {
       items.push({ ...base, lane: 'needs', reasons: [s.waitingFor ? `Waiting for you: ${s.waitingFor}` : 'Waiting for your input'], priority: 70 })
     } else if (s.live && s.working) {
       items.push({ ...base, lane: 'running', reasons: [], priority: 30 })
     } else if (s.branch && branchKeys.has(`${s.projectId}:${s.branch}`)) {
       // Its work is the branch card.
+    } else if (pendingWork(s) && landingActive) {
+      // Being landed right now: the branch card shows that, so do not show it twice.
     } else if (pendingWork(s)) {
       // Finished its turn, but what it made has not been committed or landed.
       // That is the next thing to do, so it belongs with finished work. It goes
@@ -419,6 +477,40 @@ export function deriveFloor(input: FloorInput): FloorModel {
   const spendTodayUsd = runs.filter((r) => r.startedAt >= today || isActive(r.status)).reduce((sum, r) => sum + r.spentUsd, 0)
 
   return { items, byLane, hiddenOlder, spendTodayUsd, attentionByProject }
+}
+
+/** What we remember about a session's checkout while it held uncommitted work. */
+export interface PendingEpisode {
+  head: string
+  dirty: number
+  ahead: number
+  /** When this episode of pending work FIRST appeared. It does not move while the work is still there. */
+  since: number
+}
+
+/**
+ * The work a session held is gone from its checkout. Who took it?
+ *
+ *  - `landing`: a landing Agent Ship ran for this very session finished after
+ *    the episode began, so that landing is what removed it.
+ *  - `hand`: it was committed or merged by you (HEAD moved, or unmerged commits
+ *    are gone) and no such landing explains it.
+ *  - `none`: nothing we can say happened (e.g. the files were just discarded).
+ *
+ * The anchor is when the episode began, NOT the last time we happened to see
+ * the work: git state is polled, so a stale poll right after a landing can
+ * "see" the work again after it has ended.
+ */
+export function whoClearedIt(
+  episode: PendingEpisode,
+  nowHead: string,
+  runs: readonly RunView[],
+  sessionId: string
+): 'landing' | 'hand' | 'none' {
+  const gone = (episode.dirty > 0 && episode.head !== nowHead) || episode.ahead > 0
+  if (!gone) return 'none'
+  const landed = runs.some((r) => r.flowSlug === LAND_FLOW && r.inputs.session === sessionId && (r.endedAt ?? r.startedAt) >= episode.since)
+  return landed ? 'landing' : 'hand'
 }
 
 /** Where a session's working/blocked verdict came from, so it can be audited. */

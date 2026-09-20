@@ -3,6 +3,7 @@
 // accumulates on disk (the "worktrees pile up" complaint from the research).
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
@@ -14,9 +15,14 @@ async function git(cwd: string, args: string[], timeout = 30_000): Promise<strin
 }
 
 /** Like `git`, but a non-zero exit is a result, not an exception. */
-async function gitRaw(cwd: string, args: string[], timeout = 60_000): Promise<{ code: number; out: string; err: string }> {
+async function gitRaw(
+  cwd: string,
+  args: string[],
+  timeout = 60_000,
+  env?: NodeJS.ProcessEnv
+): Promise<{ code: number; out: string; err: string }> {
   try {
-    const { stdout, stderr } = await exec('git', args, { cwd, windowsHide: true, timeout, maxBuffer: 8 * 1024 * 1024 })
+    const { stdout, stderr } = await exec('git', args, { cwd, windowsHide: true, timeout, maxBuffer: 8 * 1024 * 1024, env: env ? { ...process.env, ...env } : undefined })
     return { code: 0, out: stdout.trim(), err: stderr.trim() }
   } catch (e) {
     const x = e as { code?: number; stdout?: string; stderr?: string; message: string }
@@ -190,6 +196,105 @@ export async function fastForward(cwd: string, sha: string): Promise<boolean> {
 /** Moves a branch that is checked out nowhere. Fails if it moved since `oldSha`. */
 export async function updateBranch(repo: string, branch: string, sha: string, oldSha: string): Promise<boolean> {
   return (await gitRaw(repo, ['update-ref', `refs/heads/${branch}`, sha, oldSha])).code === 0
+}
+
+// --- turning a session's uncommitted work into something landable -----------------
+//
+// Everything here reads and writes git objects directly. It never checks
+// anything out, never touches the real index, and never rewrites your files:
+// the worst a failure can do is leave an unused commit behind.
+
+export async function topLevel(cwd: string): Promise<string> {
+  return path.resolve(await git(cwd, ['rev-parse', '--show-toplevel']))
+}
+
+/** '' when HEAD is detached. */
+export async function currentBranch(cwd: string): Promise<string> {
+  const r = await gitRaw(cwd, ['symbolic-ref', '--short', '-q', 'HEAD'])
+  return r.code === 0 ? r.out : ''
+}
+
+/** The repository a checkout belongs to, so a session's checkout (the main one or a linked worktree) can be matched to a project. */
+export async function commonDir(cwd: string): Promise<string> {
+  const out = await git(cwd, ['rev-parse', '--git-common-dir'])
+  return path.resolve(cwd, out).replace(/\\/g, '/').toLowerCase()
+}
+
+/** The tree of everything in the working directory (tracked changes and untracked files, ignore rules respected), built in a throwaway index. */
+export async function workingTreeId(cwd: string): Promise<string> {
+  const top = await topLevel(cwd)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentship-idx-'))
+  const env = { GIT_INDEX_FILE: path.join(dir, 'index') }
+  try {
+    const add = await gitRaw(top, ['add', '-A', '--', '.', ...NO_DEPS], 120_000, env)
+    if (add.code !== 0) throw new Error(add.err || 'git add failed')
+    const w = await gitRaw(top, ['write-tree'], 60_000, env)
+    if (w.code !== 0) throw new Error(w.err || 'git write-tree failed')
+    return w.out
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/** True when the working directory is exactly what `commitish` contains. */
+export async function workingTreeMatches(cwd: string, commitish: string): Promise<boolean> {
+  const [now, want] = await Promise.all([workingTreeId(cwd), git(cwd, ['rev-parse', `${commitish}^{tree}`])])
+  return now === want
+}
+
+export interface Snapshot {
+  sha: string
+  parent: string
+  /** False when the working directory already equals HEAD: there is nothing to commit. */
+  changed: boolean
+}
+
+/** A commit of "HEAD plus the working directory". Nothing is moved: it is just an object. */
+export async function snapshotCommit(cwd: string, message: string): Promise<Snapshot> {
+  const top = await topLevel(cwd)
+  const parent = await git(top, ['rev-parse', 'HEAD'])
+  const tree = await workingTreeId(top)
+  const headTree = await git(top, ['rev-parse', 'HEAD^{tree}'])
+  if (tree === headTree) return { sha: parent, parent, changed: false }
+  const sha = await git(top, [...(await identityArgs(top)), 'commit-tree', tree, '-p', parent, '-m', message])
+  return { sha, parent, changed: true }
+}
+
+/**
+ * Commits the working directory onto the branch that is checked out, exactly
+ * as `git add -A && git commit` would, but without touching the real index
+ * first. If files change while this runs, the newer edits simply stay
+ * uncommitted; nothing is lost.
+ */
+export async function commitToCurrentBranch(cwd: string, message: string): Promise<{ branch: string; sha: string }> {
+  const top = await topLevel(cwd)
+  const branch = await currentBranch(top)
+  if (!branch) throw new Error('This checkout is on a detached HEAD, so there is no branch to commit to.')
+  const snap = await snapshotCommit(top, message)
+  if (!snap.changed) throw new Error('There is nothing to commit.')
+  const moved = await gitRaw(top, ['update-ref', `refs/heads/${branch}`, snap.sha, snap.parent])
+  if (moved.code !== 0) throw new Error(`${branch} moved while committing; nothing was changed. Try again.`)
+  // The branch now contains the files; bring the index in line with it (files untouched).
+  await gitRaw(top, ['reset', '-q'])
+  return { branch, sha: snap.sha }
+}
+
+/** A new branch pointing at `sha`, named uniquely. Returns the name used. */
+export async function createBranchAt(repo: string, wanted: string, sha: string): Promise<string> {
+  let name = wanted
+  for (let i = 2; await refExists(repo, `refs/heads/${name}`); i++) name = `${wanted}-${i}`
+  await git(repo, ['branch', name, sha])
+  return name
+}
+
+/** Deletes a branch this app created itself (never one of yours). */
+export async function deleteBranch(repo: string, name: string): Promise<void> {
+  await gitRaw(repo, ['branch', '-D', name])
+}
+
+/** Points the index at HEAD without touching any file. */
+export async function resetIndexToHead(cwd: string): Promise<void> {
+  await gitRaw(cwd, ['reset', '-q'])
 }
 
 /** Files changed and lines added/removed on `branch` relative to `base`. */

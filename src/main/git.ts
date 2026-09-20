@@ -9,6 +9,8 @@ export interface GitState {
   /** Whether the path is inside a git work tree at all. */
   isRepo: boolean
   branch: string
+  /** Short id of the commit HEAD points at. */
+  head: string
   /** Base branch this repo merges into ("main" / "master"). */
   baseBranch: string
   /** Commits on this branch that the base branch doesn't have. */
@@ -22,6 +24,7 @@ export interface GitState {
 const EMPTY: GitState = {
   isRepo: false,
   branch: '',
+  head: '',
   baseBranch: '',
   ahead: 0,
   dirtyFiles: 0,
@@ -54,6 +57,7 @@ export async function gitState(cwd: string): Promise<GitState> {
   }
 
   const branch = await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')
+  const head = await git(cwd, ['rev-parse', '--short', 'HEAD']).catch(() => '')
   const baseBranch = await resolveBaseBranch(cwd)
 
   let ahead = 0
@@ -68,6 +72,7 @@ export async function gitState(cwd: string): Promise<GitState> {
   return {
     isRepo: true,
     branch,
+    head,
     baseBranch,
     ahead,
     dirtyFiles,

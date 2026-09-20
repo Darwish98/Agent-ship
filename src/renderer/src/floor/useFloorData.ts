@@ -4,6 +4,7 @@ import { deriveFloor, sessionActivity, type BranchLite, type FloorModel, type Se
 import type { World } from '../hooks/useAgentWorld'
 import { useWorld } from '../hooks/world'
 import { useRuns } from '../runs/RunsProvider'
+import { useHandledByHand } from './usePendingMemory'
 import type { Room } from '../types'
 
 const POLL_MS = 30_000
@@ -28,6 +29,7 @@ export function useFloorData(active: boolean): FloorData {
   const world = useWorld()
   const { runs, acknowledged } = useRuns()
   const { rooms, agents } = world
+  const handledAt = useHandledByHand(agents, runs)
 
   const [gitByRoom, setGit] = useState<Map<string, GitState>>(new Map())
   const [branchesByRoom, setBranches] = useState<Map<string, BranchInfo[]>>(new Map())
@@ -103,6 +105,7 @@ export function useFloorData(active: boolean): FloorData {
       cwd: a.cwd,
       dirtyFiles: a.dirtyFiles,
       aheadCommits: a.aheadCommits,
+      handledAt: handledAt[a.sessionId],
       branch: a.branch,
       contextTokens: a.contextTokens,
       contextLimit: a.contextLimit,
@@ -116,7 +119,7 @@ export function useFloorData(active: boolean): FloorData {
     return deriveFloor({ now, runs, sessions, branches, acknowledged })
     // `world` ticks every 15s, which keeps relative ages honest.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents, runs, branchesByRoom, acknowledged, world])
+  }, [agents, runs, branchesByRoom, acknowledged, world, handledAt])
 
   return { world, model, rooms, gitByRoom, branchesByRoom, flowsByRoom, refreshRoom }
 }

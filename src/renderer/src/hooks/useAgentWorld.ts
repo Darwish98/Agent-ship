@@ -255,6 +255,7 @@ export function useAgentWorld(): World {
       if (!agent.branch) agent.branch = git.branch
       agent.aheadCommits = git.ahead
       agent.dirtyFiles = git.dirtyFiles
+      agent.gitHead = git.head
       agent.hasEnvelope = git.hasUnmergedWork
     }
 

@@ -1,7 +1,17 @@
 import type { JSX } from 'react'
 import type { PipelineStage, StageId, StageState } from '../../../shared/floor'
 
-const GLYPH: Record<StageState, string> = { idle: '', running: '', passed: '✓', failed: '✕', awaiting: '⏸', skipped: '–' }
+const GLYPH: Record<StageState, string> = { idle: '', running: '', passed: '✓', failed: '✕', awaiting: '⏸', skipped: '–', manual: '✓' }
+
+const STATE_TEXT: Record<StageState, string> = {
+  idle: 'waiting',
+  running: 'running',
+  passed: 'passed',
+  failed: 'failed',
+  awaiting: 'waiting for you',
+  skipped: 'not part of this',
+  manual: 'done by hand, outside Agent Ship'
+}
 
 interface Props {
   stages: PipelineStage[]
@@ -24,7 +34,7 @@ export function PipelineStrip({ stages, compact, selected, onSelect }: Props): J
             <Tag
               {...(onSelect ? { type: 'button' as const, onClick: () => onSelect(s.id) } : {})}
               className={`pl-stage pl-${s.state}${selected === s.id ? ' pl-selected' : ''}`}
-              title={`${s.label}: ${s.state === 'skipped' ? 'not part of this' : s.state}. ${s.note}`}
+              title={`${s.label}: ${STATE_TEXT[s.state]}. ${s.note}`}
             >
               <span className="pl-dot" aria-hidden>
                 {GLYPH[s.state]}

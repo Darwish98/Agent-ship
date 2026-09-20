@@ -16,6 +16,8 @@ export interface FloorActions {
   stopOrRemove: (item: WorkItem) => void
   /** Opens the "land this branch" dialog. */
   land: (item: WorkItem) => void
+  /** Commit a session's uncommitted files and land them. */
+  landWork: (item: WorkItem) => void
   stopRun: (runId: string) => void
 }
 
@@ -116,6 +118,12 @@ export function RunCard(props: CardProps): JSX.Element {
   )
 }
 
+/** A finished session that left uncommitted files behind: the one case where the next step is "commit, then land". */
+export function canCommitAndLand(item: WorkItem): boolean {
+  const s = item.session
+  return Boolean(s && !s.working && !s.needsInput && s.dirtyFiles > 0)
+}
+
 export function SessionCard(props: CardProps): JSX.Element {
   const { item, actions } = props
   const s = item.session!
@@ -140,7 +148,13 @@ export function SessionCard(props: CardProps): JSX.Element {
           </div>
         </div>
       </div>
-      {item.reasons.length > 0 ? <p className="fc-reason">{item.reasons[0]}</p> : s.task && <p className="fc-sub">{truncate(s.task, 90)}</p>}
+      {item.reasons.length > 0 ? (
+        <p className="fc-reason">{item.reasons[0]}</p>
+      ) : item.landRun ? (
+        <p className="fc-sub fc-landed">✓ {item.subtitle}</p>
+      ) : (
+        s.task && <p className="fc-sub">{truncate(s.task, 90)}</p>
+      )}
       {pendingWork(s) && !s.working && (
         <p className="fc-pending" title="Work this session left in its checkout. Commit it to a branch to test and land it.">
           ✎ {pendingWork(s)}
@@ -148,6 +162,11 @@ export function SessionCard(props: CardProps): JSX.Element {
       )}
       {s.branch && <p className="fc-branch">{s.branch}</p>}
       <div className="fc-actions" onClick={stop}>
+        {canCommitAndLand(item) && (
+          <button type="button" className="btn btn-primary fc-btn" onClick={() => actions.landWork(item)}>
+            Commit &amp; land…
+          </button>
+        )}
         <button type="button" className="btn fc-btn" onClick={() => actions.openSession(s.sessionId)}>
           Open
         </button>

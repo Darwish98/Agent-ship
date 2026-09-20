@@ -41,6 +41,8 @@ export interface Agent {
   /** "interactive" or a background kind, from claude agents --json. */
   kind?: string
   /** Raw fields from `claude agents --json`; see sessionActivity for how they are read. */
+  /** Short id of the commit the session's checkout is on. */
+  gitHead?: string
   procStatus?: string
   procState?: string
   waitingFor?: string

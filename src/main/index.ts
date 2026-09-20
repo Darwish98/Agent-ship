@@ -8,6 +8,7 @@ import {
   stopAgent
 } from './agents'
 import { ClaudeCodeAdapter } from './engine/adapter'
+import * as gitops from './engine/gitops'
 import { detectTestCommand, diffSummary, isClean, refExists, worktreeHolding } from './engine/gitops'
 import { buildLandBlueprint, LAND_FLOW } from '../shared/patterns'
 import { RunEngine, worktreeRootFor } from './engine/runner'
@@ -198,6 +199,102 @@ function registerIpcHandlers(): void {
       baseHasUncommittedChanges: holder ? !(await isClean(holder)) : false
     }
   })
+  // A session's uncommitted work. What "landing" it means depends on where it is:
+  //  - on a feature branch: commit it there (as `git add -A && git commit`), then land the branch;
+  //  - on the base branch itself: never commit untested work to it. Snapshot the files
+  //    onto a NEW branch, test and merge that, and only at the end advance the base,
+  //    absorbing the files only if they are exactly what was tested.
+  const belongsToProject = async (projectPath: string, cwd: string): Promise<boolean> => {
+    try {
+      return (await gitops.commonDir(cwd)) === (await gitops.commonDir(projectPath))
+    } catch {
+      return false
+    }
+  }
+
+  ipcMain.handle('land:workPlan', async (_evt, a: { projectId: string; cwd: string }) => {
+    const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === a.projectId)
+    if (!project) return { ok: false as const, error: 'Unknown project.' }
+    if (!(await belongsToProject(project.path, a.cwd))) return { ok: false as const, error: 'That folder is not part of this project.' }
+    const top = await gitops.topLevel(a.cwd)
+    const state = await gitState(top)
+    const current = await gitops.currentBranch(top)
+    const baseBranch = state.baseBranch || 'main'
+    const test = detectTestCommand(project.path)
+    if (!current) return { ok: false as const, error: 'That checkout is on a detached HEAD, so there is no branch to work from. Check out a branch first.' }
+    if (state.dirtyFiles === 0) return { ok: false as const, error: 'There is nothing uncommitted to land.' }
+    return {
+      ok: true as const,
+      checkout: top,
+      currentBranch: current,
+      baseBranch,
+      files: state.dirtyFiles,
+      mode: (current === baseBranch ? 'on-base' : 'on-branch') as 'on-base' | 'on-branch',
+      testCommand: test.command,
+      testSource: test.source
+    }
+  })
+
+  ipcMain.handle(
+    'runs:landWork',
+    async (
+      _evt,
+      a: {
+        projectId: string
+        cwd: string
+        sessionId: string
+        baseBranch: string
+        testCommand: string
+        resolveConflicts: boolean
+        message: string
+      }
+    ) => {
+      if (!engine) return { ok: false, error: 'The run engine is not ready.' }
+      const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === a.projectId)
+      if (!project) return { ok: false, error: 'Unknown project.' }
+      if (!BRANCH_NAME.test(a.baseBranch)) return { ok: false, error: 'Invalid branch name.' }
+      if (!(await belongsToProject(project.path, a.cwd))) return { ok: false, error: 'That folder is not part of this project.' }
+      const test = String(a.testCommand ?? '').trim()
+      if (test.length > 1000 || /[\r\n]/.test(test)) return { ok: false, error: 'The test command must be a single line.' }
+      const message = String(a.message ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 200) || 'Work from a Claude Code session'
+
+      const top = await gitops.topLevel(a.cwd)
+      const current = await gitops.currentBranch(top)
+      if (!current) return { ok: false, error: 'That checkout is on a detached HEAD, so there is no branch to work from.' }
+
+      let branch = current
+      let createdBranch = ''
+      try {
+        if (current === a.baseBranch) {
+          const snap = await gitops.snapshotCommit(top, message)
+          if (!snap.changed) return { ok: false, error: 'There is nothing uncommitted to land.' }
+          branch = await gitops.createBranchAt(project.path, `agentship/work-${Date.now().toString(36)}`, snap.sha)
+          createdBranch = branch
+        } else {
+          branch = (await gitops.commitToCurrentBranch(top, message)).branch
+        }
+      } catch (err) {
+        return { ok: false, error: (err as Error).message }
+      }
+
+      const result = await engine.start({
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        flowSlug: LAND_FLOW,
+        blueprint: buildLandBlueprint({ branch, base: a.baseBranch, testCommand: test, resolveConflicts: Boolean(a.resolveConflicts) }),
+        // `checkout` ties this landing to the session that made the work, so the Floor can show its pipeline on that card.
+        inputs: { branch, checkout: top, session: /^[A-Za-z0-9_-]{1,64}$/.test(String(a.sessionId)) ? String(a.sessionId) : '' }
+      })
+      if (!result.ok) {
+        // Do not leave a stray branch we made for a run that never started.
+        if (createdBranch) await gitops.deleteBranch(project.path, createdBranch)
+        else return { ok: false, error: `${result.error} (Your work was committed to ${branch}.)` }
+      }
+      return result
+    }
+  )
+
   ipcMain.handle(
     'runs:land',
     async (_evt, a: { projectId: string; branch: string; baseBranch: string; testCommand: string; resolveConflicts: boolean }) => {

@@ -3,7 +3,7 @@ import { STAGE_LABEL, type StageId, type WorkItem } from '../../../shared/floor'
 import { formatUsd } from '../../../shared/runs'
 import { formatAgo, formatTokens } from '../lib/crew'
 import { formatDuration, RunDetail } from '../runs/RunDetail'
-import { VerifyBadge, type FloorActions } from './Cards'
+import { canCommitAndLand, VerifyBadge, type FloorActions } from './Cards'
 import { PipelineStrip } from './PipelineStrip'
 
 interface Props {
@@ -56,7 +56,12 @@ export function Drawer({ item, projectName, projectPath, baseBranch, actions, on
           </dl>
           <p className="rd-note">Started outside a flow, so it has no budget ceiling or gate. Only flows can promise those.</p>
           <div className="rd-actions">
-            <button type="button" className="btn btn-primary" onClick={() => actions.openSession(item.session!.sessionId)}>
+            {canCommitAndLand(item) && (
+              <button type="button" className="btn btn-primary" onClick={() => actions.landWork(item)}>
+                Commit &amp; land…
+              </button>
+            )}
+            <button type="button" className="btn" onClick={() => actions.openSession(item.session!.sessionId)}>
               Open in Claude Code
             </button>
             <button type="button" className="btn" onClick={() => actions.stopOrRemove(item)}>
