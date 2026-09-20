@@ -221,6 +221,8 @@ export function useAgentWorld(): World {
         contextTokens: existing?.contextTokens ?? 0,
         contextLimit: existing?.contextLimit ?? 200_000,
         lastActive: at,
+        lastHookAt: at,
+        lastHookEvent: event.hookEvent,
         live: now - at < LIVE_WINDOW_MS,
         hasEnvelope: false,
         aheadCommits: 0,
@@ -239,6 +241,8 @@ export function useAgentWorld(): World {
         agent.pid = proc.pid
         agent.kind = proc.kind
         agent.procStatus = proc.status
+        agent.procState = proc.state
+        agent.waitingFor = proc.waitingFor
         if (!agent.status || agent.status === 'idle') agent.status = 'in session'
       }
     }

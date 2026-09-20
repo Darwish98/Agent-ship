@@ -1,6 +1,6 @@
 # Agent Ship → an orchestration platform for coding agents
 
-Status: **revision 3 (2026-09-21). Phases 0, 1, 1.5 and 2 are built. A flow can now run end to end: gated build in its own branch, capped at a dollar ceiling, visible live on both the Floor and the editor.** It has been proven against the real `claude` CLI on toy tasks, not yet on real work. The Floor was redesigned from scratch, see [FLOOR_DESIGN.md](FLOOR_DESIGN.md). Section 12 is the honest evaluation (short answer: a credible wedge, not yet a revolution), and section 11 says what to do next.
+Status: **revision 3.2 (2026-09-21, after first use: landing pipeline, open-session state).** Phases 0, 1, 1.5 and 2 are built. A flow can now run end to end: gated build in its own branch, capped at a dollar ceiling, visible live on both the Floor and the editor.** It has been proven against the real `claude` CLI on toy tasks, not yet on real work. The Floor was redesigned from scratch, see [FLOOR_DESIGN.md](FLOOR_DESIGN.md). Section 12 is the honest evaluation (short answer: a credible wedge, not yet a revolution), and section 11 says what to do next.
 Working name stays "Agent Ship" until the product is clearer. Section 10's recommended defaults were assumed (solo developer, coding-agent flows only, Claude Code only, keep the name) since no answers were given; change them there if wrong.
 
 ---
@@ -293,8 +293,9 @@ How it was verified: 88 tests (fake adapter against a real git repo for the walk
 1. **Use it on real work before building more.** Run the Pipeline on a real task in a real repo with real models, five times. The open questions are no longer engineering ones: does the builder produce something a gate can meaningfully verify, what does it cost per task, what breaks on a real `npm test` on Windows, and how often does the repair loop converge. Everything in §12 that says "unproven" is decided here.
 2. **The competitor teardown (still not done).** Claude Code's agent view and workflows, Superset, Claude Squad, Vibe Kanban. Half a day each, before Phase 3 commits the next weeks.
 3. **Phase 3, in this order:** resume-after-restart (a killed app currently loses the run) and an orphan-worktree sweep; then fan-out/join with a real judge for "best of N"; then a Merge node so "Land" stops using the legacy agent.
-4. **Floor gaps found while building it:** OS notification when something enters Needs you; keyboard triage (j/k/enter); per-session cost for ad-hoc work (transcripts, not exact); search across projects; "Needs input" for ad-hoc sessions depends on what `claude agents --json` reports (only idle/busy observed).
-5. §10's questions still stand; the recommended defaults are still assumed.
+4. **Turn a session's uncommitted work into something landable.** The Floor now shows a finished session's uncommitted files but cannot land them (a Land needs a commit on a branch). Candidate: "Commit to a branch" that snapshots the working tree onto `agentship/<session>` without touching your checkout or index, then hands it to the landing pipeline. Not built: when the session works directly on `main` (as many do) the interplay with a dirty checkout needs a decision from you first.
+5. **Floor gaps found while building it:** OS notification when something enters Needs you; keyboard triage (j/k/enter); per-session cost for ad-hoc work (transcripts, not exact); search across projects; "Needs input" for ad-hoc sessions depends on what `claude agents --json` reports (only idle/busy observed).
+6. §10's questions still stand; the recommended defaults are still assumed.
 
 ---
 
@@ -314,7 +315,7 @@ Method: unit tests, live tests against the real CLI, an automated end-to-end run
 2. **No resume.** Closing the app mid-run marks it interrupted and loses the in-flight step (the branch and commits survive). Crash-resume was promised in §5 and is not built. Worktrees orphaned by a hard kill are never swept.
 3. **"Edit access" is weaker than it sounds.** Under `acceptEdits` a simple shell write was allowed in the spike, so containment is the worktree, not the permission mode. A step with edit access and *no* worktree edits the live checkout (the editor warns; the run confirmation says it plainly).
 4. **POSIX untested.** Everything was exercised on Windows only. Process-tree killing on macOS/Linux (`detached` + negative pid) is written but has never run.
-5. Smaller: "Needs input" for ad-hoc sessions is only as good as the CLI's status field; the Floor polls git every 30 s per project; flow `version` is never bumped; Land still uses a background agent.
+5. Smaller: `blocked` / `waiting` / `waitingFor` are implemented from the CLI's documented values but have never been seen on real output (only `busy`, `idle` and `done` have); the Floor polls git every 30 s per project; flow `version` is never bumped.
 6. Test-suite hygiene: the Electron test once raced the library's async load (fixed by waiting); the dev mock is a second implementation of the API that can drift.
 
 ### 12.2 Against the five pillars (rev. 2 score in brackets)
@@ -352,6 +353,11 @@ What is *not* new: the four-lane board resembles agent view and Superset's categ
 - A landing run is not its own card: it lights the Merge and Land stages of the branch it is landing, moves that card to Running, and to Needs you (with the reason) if it stops.
 
 **Evidence:** 15 real-git tests (clean land; base checked out vs not; tests failing on the branch and on the *merged* result, base untouched; dirty checkout refused; base moving mid-land; conflicts with/without the resolver; a resolver that leaves markers is rejected; dependency links never deleting real `node_modules`); 8 tests for the pipeline rules; the Electron test lands a verified branch into a real repo through the UI; and one opt-in live test where the **real model resolved a real conflict** under the restricted tools ($0.17: the merge step uses your default model, so it is not the cheapest option).
+
+**Rev. 3.2: open sessions.** Two more defects found by using it, both fixed and tested:
+- *A finished session stayed "building".* The Floor equated "process alive" with "working". It now reads the CLI's documented `status` / `state` / `waitingFor` (`sessionActivity`, one row per rule in the tests) and falls back to recent hook activity, never to a blanket assumption; an unrecognised value means "no information". An idle session's Build is done, its uncommitted files or unmerged commits appear as "✎ N uncommitted files" with Test, Merge and Land waiting, and a blocked one goes to Needs you saying what it is waiting for. Rules and rationale: FLOOR_DESIGN §8.
+- *Session cards overflowed.* Card-kind class names (`fc-session`, `fc-branch`) collided with inner elements' classes, so whole cards were styled like an inner row. Renamed (`fc-k-*`); measured before and after.
+- The end-to-end test now flips a session busy → idle → blocked through the real `claude agents` path, with every check pinned to that session (the first version passed for the wrong reason, satisfied by an unrelated real session).
 
 **Limits found:** test-command detection only knows npm, cargo, go and pytest (otherwise you type one, or land unverified, which the dialog says); only `node_modules` is linked into scratch copies, so projects with other untracked dependencies (a Python venv, a build cache) may fail their tests there; landing several branches means landing one at a time; a scratch copy is deleted a few milliseconds after the run reports finished.
 

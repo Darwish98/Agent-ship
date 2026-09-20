@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveFloor, needsInputStatus, verificationOf, type BranchLite, type SessionLite } from './floor'
+import { deriveFloor, HOOK_FRESH_MS, HOOK_RECENT_MS, sessionActivity, verificationOf, type BranchLite, type SessionLite } from './floor'
 import { fromPattern, PATTERNS } from './patterns'
 import { foldRun, type RunEvent, type RunView } from './runs'
 
@@ -34,7 +34,7 @@ function makeRun(opts: {
 
 const session = (over: Partial<SessionLite> = {}): SessionLite => ({
   sessionId: `s${++n}`, name: 'nova', role: 'Dev', task: 'do a thing', status: 'busy', projectId: 'p1', live: true,
-  working: true, needsInput: false, lastActive: NOW - 60_000, cwd: '/r', dirtyFiles: 0, aheadCommits: 0, branch: '', contextTokens: 1, contextLimit: 10, ...over
+  working: true, needsInput: false, waitingFor: '', lastActive: NOW - 60_000, cwd: '/r', dirtyFiles: 0, aheadCommits: 0, branch: '', contextTokens: 1, contextLimit: 10, ...over
 })
 
 const branch = (over: Partial<BranchLite> = {}): BranchLite => ({
@@ -152,12 +152,9 @@ describe('sessions', () => {
     expect(f.hiddenOlder).toBe(1)
   })
 
-  it('reads only real "waiting" wording as needing input', () => {
-    expect(needsInputStatus('idle')).toBe(false)
-    expect(needsInputStatus('busy')).toBe(false)
-    expect(needsInputStatus(undefined)).toBe(false)
-    expect(needsInputStatus('needs_input')).toBe(true)
-    expect(needsInputStatus('waiting for permission')).toBe(true)
+  it('says what a blocked session is waiting for', () => {
+    const f = derive({ sessions: [session({ live: true, working: false, needsInput: true, waitingFor: 'permission prompt' })] })
+    expect(f.byLane.needs[0].reasons[0]).toBe('Waiting for you: permission prompt')
   })
 })
 
@@ -329,5 +326,45 @@ describe('an open session that has finished its turn', () => {
     const f = derive({ sessions: [session({ live: true, working: false, needsInput: true })] })
     expect(f.byLane.needs).toHaveLength(1)
     expect(states(f.byLane.needs[0])).toBe('build:awaiting test:idle merge:idle land:idle')
+  })
+})
+
+describe('is a live session working, blocked, or finished? (sessionActivity)', () => {
+  const t = 1_000_000_000_000
+  const tool = (msAgo: number, name = 'PreToolUse') => ({ lastHookAt: t - msAgo, lastHookEvent: name })
+  const verdict = (i: Parameters<typeof sessionActivity>[0]): string => {
+    const a = sessionActivity(i)
+    return `${a.needsInput ? 'blocked' : a.working ? 'working' : 'idle'}/${a.basis}`
+  }
+
+  it.each([
+    // What the CLI says, for the two kinds of session it lists.
+    ['status busy', { status: 'busy' }, 'working/cli-status'],
+    ['status idle', { status: 'idle' }, 'idle/cli-status'],
+    ['status waiting with nothing to wait on is just between steps', { status: 'waiting' }, 'idle/cli-status'],
+    ['status waiting on a permission prompt needs you', { status: 'waiting', waitingFor: 'permission prompt' }, 'blocked/cli-blocked'],
+    ['state blocked needs you', { state: 'blocked' }, 'blocked/cli-blocked'],
+    ['state working', { state: 'working' }, 'working/cli-state'],
+    ['state done means it finished its turn, even with a busy-looking status', { state: 'done', status: 'busy' }, 'idle/cli-state'],
+    ['state failed', { state: 'failed' }, 'idle/cli-state'],
+    ['state stopped', { state: 'stopped' }, 'idle/cli-state'],
+    // The CLI is polled every ~10s; a tool that just ran beats a stale answer.
+    ['a tool ran a moment ago beats a stale idle', { status: 'idle', ...tool(HOOK_FRESH_MS - 1) }, 'working/hook-activity'],
+    ['...but not once that is old', { status: 'idle', ...tool(HOOK_FRESH_MS + 1) }, 'idle/cli-status'],
+    ['a Stop event is not activity', { status: 'idle', ...tool(100, 'Stop') }, 'idle/cli-status'],
+    ['a prompt is decided before "a tool just ran" (the hook fires before the dialog)', { status: 'waiting', waitingFor: 'permission prompt', ...tool(200) }, 'blocked/cli-blocked'],
+    // The limit that used to be a blind guess: nothing usable from the CLI.
+    ['no signal at all is NOT assumed to be working', {}, 'idle/no-signal'],
+    ['an unrecognised status is NOT assumed to be working', { status: 'zombie' }, 'idle/no-signal'],
+    ['an unrecognised state is NOT assumed to be working', { state: 'sleeping', status: 'hibernating' }, 'idle/no-signal'],
+    ['with no usable CLI word, recent hook activity still counts', { status: 'zombie', ...tool(HOOK_RECENT_MS - 1) }, 'working/hook-activity'],
+    ['...and stale hook activity does not', { status: 'zombie', ...tool(HOOK_RECENT_MS + 1) }, 'idle/no-signal'],
+    ['matching is case- and whitespace-tolerant', { status: ' BUSY ' }, 'working/cli-status']
+  ])('%s', (_name, input, expected) => {
+    expect(verdict({ now: t, ...input })).toBe(expected)
+  })
+
+  it('carries what a blocked session is waiting on', () => {
+    expect(sessionActivity({ now: t, status: 'waiting', waitingFor: 'sandbox request' }).waitingFor).toBe('sandbox request')
   })
 })

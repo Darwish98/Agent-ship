@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { BranchInfo, FlowSummary, GitState } from '../../../preload'
-import { deriveFloor, needsInputStatus, type BranchLite, type FloorModel, type SessionLite } from '../../../shared/floor'
+import { deriveFloor, sessionActivity, type BranchLite, type FloorModel, type SessionLite } from '../../../shared/floor'
 import type { World } from '../hooks/useAgentWorld'
 import { useWorld } from '../hooks/world'
 import { useRuns } from '../runs/RunsProvider'
@@ -78,7 +78,17 @@ export function useFloorData(active: boolean): FloorData {
   }, [finishedKey])
 
   const model = useMemo(() => {
-    const sessions: SessionLite[] = agents.map((a) => ({
+    const now = Date.now()
+    const sessions: SessionLite[] = agents.map((a) => {
+      const act = sessionActivity({
+        status: a.procStatus,
+        state: a.procState,
+        waitingFor: a.waitingFor,
+        lastHookAt: a.lastHookAt,
+        lastHookEvent: a.lastHookEvent,
+        now
+      })
+      return {
       sessionId: a.sessionId,
       name: a.name,
       role: a.role,
@@ -86,10 +96,9 @@ export function useFloorData(active: boolean): FloorData {
       status: a.status,
       projectId: a.roomId,
       live: a.live,
-      // Claude Code reports a running session as busy or idle. Without that (a
-      // session known only from hook events) assume it is working.
-      working: a.live && (a.procStatus ? a.procStatus !== 'idle' : true),
-      needsInput: needsInputStatus(a.procStatus),
+      working: a.live && act.working,
+      needsInput: a.live && act.needsInput,
+      waitingFor: act.waitingFor,
       lastActive: a.lastActive,
       cwd: a.cwd,
       dirtyFiles: a.dirtyFiles,
@@ -98,12 +107,13 @@ export function useFloorData(active: boolean): FloorData {
       contextTokens: a.contextTokens,
       contextLimit: a.contextLimit,
       pid: a.pid
-    }))
+      }
+    })
     const branches: BranchLite[] = []
     for (const [projectId, list] of branchesByRoom) {
       for (const b of list) branches.push({ projectId, branch: b.branch, ahead: b.ahead, lastCommitAt: b.lastCommitAt, subject: b.subject })
     }
-    return deriveFloor({ now: Date.now(), runs, sessions, branches, acknowledged })
+    return deriveFloor({ now, runs, sessions, branches, acknowledged })
     // `world` ticks every 15s, which keeps relative ages honest.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agents, runs, branchesByRoom, acknowledged, world])

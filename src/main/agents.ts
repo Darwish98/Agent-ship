@@ -21,8 +21,12 @@ export interface RunningAgent {
   sessionId: string
   name: string
   startedAt: number
-  /** As reported by `claude agents --json` (observed: idle, busy). */
+  /** Process status from `claude agents --json`: busy | waiting | idle. */
   status?: string
+  /** Session state (background sessions): working | blocked | done | failed | stopped. */
+  state?: string
+  /** What a waiting session is blocked on ("permission prompt", "input needed"...). */
+  waitingFor?: string
 }
 
 /**

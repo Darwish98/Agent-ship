@@ -40,6 +40,8 @@ export interface RunningAgent {
   name: string
   startedAt: number
   status?: string
+  state?: string
+  waitingFor?: string
 }
 
 export interface GitState {

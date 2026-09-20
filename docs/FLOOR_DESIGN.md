@@ -73,7 +73,7 @@ Three nouns, one loop:
 
 ## 5. Honest limits of this design
 
-- "Needs input" for *ad-hoc* sessions is only as good as what `claude agents --json` exposes (observed states: `idle`, `busy`). Runs have exact states because the engine owns them; sessions do not. The lane handles unknown states conservatively (treated as running).
+- Session state comes from what `claude agents --json` documents (`status`, `state`, `waitingFor`), read by `sessionActivity` in `shared/floor.ts`. Runs have exact states because the engine owns them; sessions do not. Where the CLI gives nothing usable the Floor falls back to recent hook activity and never to a blanket assumption (see §8).
 - Verification only exists for work that went through a Gate. Everything else is honestly labelled unverified.
 - The "Land" action still uses the earlier merge-agent path (a background Claude session with the Merge train brief). A Merge node in the engine is later work.
 - Cost for ad-hoc sessions is token-based (from transcripts); only engine runs have exact dollars.
@@ -93,7 +93,7 @@ How it differs from the concept above:
 
 Not built, in priority order: an OS notification when something enters **Needs you**; keyboard triage (j/k/enter); search across projects; per-session cost for ad-hoc work; a "Land all verified" action; and replay of a finished run.
 
-Found during the build: the CLI's per-session `status` for ad-hoc sessions has only been observed as `idle`/`busy`, so "waiting for input" on ad-hoc sessions is wired but has not been seen to fire. Flow runs do not have this limit because the engine owns their state.
+Found during the build: only `busy`/`idle` (and `done` for background sessions) have been seen on real output. "Waiting for input" is implemented from the documented values (`state: blocked`, `status: waiting` + `waitingFor`) and covered by tests and a simulated end-to-end run, but has not been seen on a real session. Flow runs do not have this limit because the engine owns their state.
 
 ## 7. A pipeline inside every task (added after first use)
 
@@ -111,3 +111,17 @@ The first version showed *sessions*, *runs* and *branches* as three unrelated ki
 - **Click a stage** to see what is behind it: the real steps with their output, cost and attempts, or a button that opens the real Claude Code session that built it.
 - A stage that is not part of a flow shows dashed ("skipped"), and a task nobody has tested says so ("unverified, landing tests it first") instead of looking finished.
 - Stages reflect steps that have *run*: a Test stage with a before-merge and an after-merge gate reads passed after the first and lights red only if the second fails.
+
+## 8. Is an open session working, waiting, or finished? (added after first use)
+
+The first version treated "the Claude process is alive" as "the agent is working", so a session that had *finished its response* stayed in Running with Build lit forever, even with uncommitted files waiting. A later patch treated an unrecognised status as "working" too, which is the same mistake: assuming instead of reading.
+
+`sessionActivity` now decides, in this order:
+
+1. **Blocked on a person**: `state: blocked`, or `status: waiting` with a `waitingFor`. Goes to Needs you and says what for ("Waiting for you: permission prompt"). Decided first, because a tool hook fires just before a permission dialog.
+2. **A tool ran in the last 5 s**: working, even if the last poll said idle. The CLI is polled every ~10 s, so it can lag a session that just started a new turn. A `Stop` event never counts.
+3. **`state`**: `working` means working; `done` / `failed` / `stopped` do not.
+4. **`status`**: `busy` means working; `idle` and `waiting` (with nothing to wait on) do not.
+5. **Anything else** (missing, or a value this build does not know): only *evidence* counts. A tool hook in the last 60 s means working; otherwise it is idle. Never a blind guess.
+
+What follows from the verdict: working stays in **Running** with Build lit; blocked goes to **Needs you**; idle with uncommitted files or unmerged commits goes to **Ready to land** with Build done and the later stages waiting ("✎ 8 uncommitted files"); idle with nothing left rests in **Done**. When several sessions share a checkout, the most recently active one owns its uncommitted files.

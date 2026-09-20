@@ -23,6 +23,8 @@ export interface SessionLite {
   /** Actually mid-turn. A live session that is idle is open, but its work is finished for now. */
   working: boolean
   needsInput: boolean
+  /** What a blocked session is waiting on ("permission prompt", "input needed"...). */
+  waitingFor: string
   lastActive: number
   cwd: string
   /** Uncommitted files and unmerged commits in this session's checkout. */
@@ -389,7 +391,7 @@ export function deriveFloor(input: FloorInput): FloorModel {
     if (runSessionIds.has(s.sessionId)) continue // shown inside its run
     const base = { id: `session:${s.sessionId}`, kind: 'session' as const, projectId: s.projectId, title: s.name, subtitle: s.task, updatedAt: s.lastActive, session: s, pipeline: pipelineForSession(s), authors: [] as string[], authorSessions: [] as SessionLite[] }
     if (s.live && s.needsInput) {
-      items.push({ ...base, lane: 'needs', reasons: ['Waiting for your input'], priority: 70 })
+      items.push({ ...base, lane: 'needs', reasons: [s.waitingFor ? `Waiting for you: ${s.waitingFor}` : 'Waiting for your input'], priority: 70 })
     } else if (s.live && s.working) {
       items.push({ ...base, lane: 'running', reasons: [], priority: 30 })
     } else if (s.branch && branchKeys.has(`${s.projectId}:${s.branch}`)) {
@@ -419,8 +421,63 @@ export function deriveFloor(input: FloorInput): FloorModel {
   return { items, byLane, hiddenOlder, spendTodayUsd, attentionByProject }
 }
 
-/** Only real "waiting on a person" wording counts. Anything else `claude
- *  agents --json` reports (observed: idle, busy) is treated as ordinary. */
-export function needsInputStatus(status: string | undefined): boolean {
-  return Boolean(status && /input|waiting|blocked|permission|approval/i.test(status))
+/** Where a session's working/blocked verdict came from, so it can be audited. */
+export type ActivityBasis = 'cli-blocked' | 'cli-state' | 'cli-status' | 'hook-activity' | 'no-signal'
+
+export interface ActivityInput {
+  /** `status` from `claude agents --json`: busy | waiting | idle (only while the process is alive). */
+  status?: string
+  /** `state`: working | blocked | done | failed | stopped (present for background sessions). */
+  state?: string
+  /** Present with status "waiting": permission prompt, input needed, sandbox request... */
+  waitingFor?: string
+  /** The newest hook event for this session, and its name. */
+  lastHookAt?: number
+  lastHookEvent?: string
+  now: number
+}
+
+export interface Activity {
+  working: boolean
+  needsInput: boolean
+  waitingFor: string
+  basis: ActivityBasis
+}
+
+/** The CLI is polled every ~10s, so a tool that ran this recently outranks a stale "idle". */
+export const HOOK_FRESH_MS = 5_000
+/** With no usable word from the CLI, hook activity this recent still means it is doing something. */
+export const HOOK_RECENT_MS = 60_000
+
+/**
+ * Is a live session actually mid-turn, or blocked on a person? Reads what
+ * Claude Code says (documented values only) and, where it says nothing usable,
+ * falls back to evidence (recent hook events), never to a blanket guess:
+ * assuming "working" is what once left finished sessions stuck in Build.
+ */
+export function sessionActivity(i: ActivityInput): Activity {
+  const state = (i.state ?? '').trim().toLowerCase()
+  const status = (i.status ?? '').trim().toLowerCase()
+  const waitingFor = (i.waitingFor ?? '').trim()
+
+  // 1. Waiting on a person. A tool hook fires just before a permission prompt,
+  //    so this has to be decided before "a tool ran a moment ago".
+  if (state === 'blocked') return { working: false, needsInput: true, waitingFor, basis: 'cli-blocked' }
+  if (status === 'waiting' && waitingFor) return { working: false, needsInput: true, waitingFor, basis: 'cli-blocked' }
+
+  // 2. A tool ran moments ago: the process poll may simply not have caught up.
+  const hookIsTool = i.lastHookAt !== undefined && i.lastHookEvent !== 'Stop'
+  if (hookIsTool && i.now - (i.lastHookAt as number) < HOOK_FRESH_MS) {
+    return { working: true, needsInput: false, waitingFor: '', basis: 'hook-activity' }
+  }
+
+  // 3. The session state, then 4. the process status.
+  if (state === 'working') return { working: true, needsInput: false, waitingFor: '', basis: 'cli-state' }
+  if (state === 'done' || state === 'failed' || state === 'stopped') return { working: false, needsInput: false, waitingFor: '', basis: 'cli-state' }
+  if (status === 'busy') return { working: true, needsInput: false, waitingFor: '', basis: 'cli-status' }
+  if (status === 'idle' || status === 'waiting') return { working: false, needsInput: false, waitingFor: '', basis: 'cli-status' }
+
+  // 5. Nothing usable (missing, or a value this build does not know): only evidence counts.
+  const recent = hookIsTool && i.now - (i.lastHookAt as number) < HOOK_RECENT_MS
+  return { working: recent, needsInput: false, waitingFor: '', basis: recent ? 'hook-activity' : 'no-signal' }
 }

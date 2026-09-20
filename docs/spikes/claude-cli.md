@@ -75,7 +75,7 @@ HEAD"). So:
 
 - `claude agents --json` lists active sessions (already used for liveness);
   `--all` adds completed background sessions; `--cwd <path>` filters.
-  Entries carry `status` (`idle`/`busy`), which the app does not read yet.
+  Entries carry `status` (`busy` | `waiting` | `idle`, only while the process is alive). Background sessions also carry `state` (`working` | `blocked` | `done` | `failed` | `stopped`), and a waiting session has `waitingFor` (`permission prompt`, `input needed`, `sandbox request`, `worker request`, `dialog open`). Source: the agent-view docs. **Verified on this machine:** a live interactive session shows only `status` (busy while working); completed background sessions with `--all` show `state: "done"`. `blocked`, `waiting`, `waitingFor` and `failed` were **not** observed on real output, only read from the docs, so the app treats an unrecognised value as "no information", not as a state.
 - `claude logs <id>` prints recent terminal output of a background session.
 - `--include-hook-events` (with `stream-json`) can surface hook lifecycle in the
   output stream, an option to replace the local HTTP bridge for engine-driven

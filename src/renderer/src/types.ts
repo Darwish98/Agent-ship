@@ -40,8 +40,13 @@ export interface Agent {
   pid?: number
   /** "interactive" or a background kind, from claude agents --json. */
   kind?: string
-  /** Raw `status` from claude agents --json (observed: idle, busy). */
+  /** Raw fields from `claude agents --json`; see sessionActivity for how they are read. */
   procStatus?: string
+  procState?: string
+  waitingFor?: string
+  /** The newest hook event for this session. */
+  lastHookAt?: number
+  lastHookEvent?: string
 }
 
 /** A removed session, kept around only so a room's "bring back" menu can

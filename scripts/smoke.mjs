@@ -91,8 +91,8 @@ fs.writeFileSync(
 // The fake CLI: builds on the first call, and only "fixes" the code when asked
 // to repair (a --resume), so the gate fails once and the loop is exercised.
 const agentsFile = path.join(tmp, 'agents.json')
-const setAgents = (status) =>
-  fs.writeFileSync(agentsFile, JSON.stringify([{ pid: 4242, cwd: project, kind: 'interactive', sessionId: 'smoke-0', name: 'crew0', status, startedAt: Date.now() }]))
+const setAgents = (status, extra = {}) =>
+  fs.writeFileSync(agentsFile, JSON.stringify([{ pid: 4242, cwd: project, kind: 'interactive', sessionId: 'smoke-0', name: 'crew0', status, startedAt: Date.now(), ...extra }]))
 setAgents('busy')
 const fake = path.join(tmp, 'fake-claude.cjs')
 fs.writeFileSync(
@@ -253,6 +253,17 @@ try {
     (await evalJs(`[...(${crew0('ready')}?.querySelectorAll('.pl-stage') ?? [])].map(e => e.className.match(/pl-(passed|idle|running|skipped|failed)/)?.[1]).join()`)) === 'passed,idle,idle,idle',
     'the pipeline reads Build done, then Test, Merge and Land waiting'
   )
+  // Waiting on a person: the CLI says so, and the card says what for.
+  setAgents('waiting', { waitingFor: 'permission prompt' })
+  check(await waitFor(() => inLane('needs'), 40000), 'a session waiting on a permission prompt moves to Needs you')
+  check(await evalJs(`(${crew0('needs')}?.textContent ?? '').includes('permission prompt')`), 'and the card says what it is waiting for')
+  // A status this build has never heard of is not trusted either way: it defers to
+  // evidence. crew0 ran a tool moments ago, so it stays Running; the unit tests cover
+  // the other half (an unknown status with stale hooks is NOT working).
+  setAgents('somethingNew')
+  check(await waitFor(() => inLane('running'), 40000), 'an unrecognised status defers to recent hook activity')
+  setAgents('idle')
+  check(await waitFor(() => inLane('ready'), 40000), 'and a recognised idle status settles it back to finished work')
   await shot('1b-idle-session')
 
   // --- 2. A whole run, launched from the Floor ----------------------------------
