@@ -7,7 +7,7 @@ import type {
   SessionSummary,
   Settings
 } from '../../../preload'
-import type { Agent, Room } from '../types'
+import type { Agent, HiddenAgent, Room } from '../types'
 
 /** A session counts as "live" if it emitted a hook event this recently. */
 const LIVE_WINDOW_MS = 3 * 60 * 1000
@@ -55,8 +55,10 @@ export interface World {
   setBudget: (budget: number) => Promise<void>
   gitStateFor: (cwd: string) => GitState | undefined
   hideAgent: (sessionId: string) => Promise<void>
+  restoreAgent: (sessionId: string) => Promise<void>
   unhideAll: () => Promise<void>
   hiddenCount: number
+  hiddenByRoom: Map<string, HiddenAgent[]>
 }
 
 export function useAgentWorld(): World {
@@ -267,6 +269,24 @@ export function useAgentWorld(): World {
     return out
   }, [sessions, liveList, roomIdFor, gitStates, runningBySession, hidden])
 
+  // Sessions the user removed from a room, kept only so the room's "bring
+  // back" menu can list them and reopen one on request.
+  const hiddenByRoom = useMemo(() => {
+    const map = new Map<string, HiddenAgent[]>()
+    if (!hidden.length) return map
+    const hiddenSet = new Set(hidden)
+    for (const s of sessions) {
+      if (!hiddenSet.has(s.sessionId)) continue
+      const roomId = roomIdFor(s.cwd)
+      if (!roomId) continue
+      const list = map.get(roomId) ?? []
+      list.push({ sessionId: s.sessionId, name: s.title || baseName(s.cwd), roomId, lastActive: s.updatedAt })
+      map.set(roomId, list)
+    }
+    for (const list of map.values()) list.sort((a, b) => b.lastActive - a.lastActive)
+    return map
+  }, [sessions, hidden, roomIdFor])
+
   // --- git polling -------------------------------------------------------
 
   const cwdKey = useMemo(
@@ -309,6 +329,19 @@ export function useAgentWorld(): World {
     [hidden]
   )
 
+  // Un-hides the session and reopens it in Claude Code - the running session
+  // is what puts the agent back on the canvas, via the same hook events and
+  // `listRunning` poll that drive every other live agent.
+  const restoreAgent = useCallback(
+    async (sessionId: string) => {
+      const next = hidden.filter((id) => id !== sessionId)
+      setHiddenState(next)
+      await window.agentShip.setHidden(next)
+      await window.agentShip.openSession(sessionId)
+    },
+    [hidden]
+  )
+
   const unhideAll = useCallback(async () => {
     setHiddenState([])
     await window.agentShip.setHidden([])
@@ -331,7 +364,9 @@ export function useAgentWorld(): World {
     setBudget,
     gitStateFor,
     hideAgent,
+    restoreAgent,
     unhideAll,
-    hiddenCount: hidden.length
+    hiddenCount: hidden.length,
+    hiddenByRoom
   }
 }

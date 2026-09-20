@@ -37,21 +37,18 @@ function EnvelopeBadge({ count }: { count: number }): JSX.Element {
 
 export function AgentNode({ data }: NodeProps): JSX.Element {
   const agent = data.agent as Agent
-  const walking = Boolean(data.walking)
-  const facingLeft = Boolean(data.facingLeft)
   const onOpen = data.onOpen as (a: Agent) => void
   const onDelete = data.onDelete as (a: Agent) => void
   const badge = badgeFor(agent.role, agent.isOrchestrator)
   const level = batteryLevel(agent)
 
   return (
-    <div
-      className={`agent-node${agent.live ? ' is-live' : ' is-idle'}${walking ? ' is-walking' : ''}`}
-    >
+    <div className={`agent-node${agent.live ? ' is-live' : ' is-idle'}`}>
       <Handle type="target" position={Position.Top} className="agent-handle" />
 
-      <div className="agent-figure" style={{ transform: facingLeft ? 'scaleX(-1)' : undefined }}>
+      <div className="agent-figure">
         {agent.hasEnvelope && <EnvelopeBadge count={agent.aheadCommits} />}
+        {agent.live && <span className="agent-pulse" aria-hidden="true" />}
         <AgentSprite
           agentKey={agent.key}
           role={agent.role}
@@ -69,6 +66,7 @@ export function AgentNode({ data }: NodeProps): JSX.Element {
         <span className="agent-name">{truncate(agent.name, 14)}</span>
       </div>
 
+      {agent.live && <div className="agent-status">{truncate(agent.status, 22)}</div>}
       {!agent.live && <div className="agent-asleep">{formatAgo(agent.lastActive)}</div>}
 
       <div className="agent-hovercard">

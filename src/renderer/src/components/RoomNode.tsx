@@ -1,7 +1,7 @@
 import type { NodeProps } from '@xyflow/react'
-import type { JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import { colorFor, truncate } from '../lib/crew'
-import type { Room } from '../types'
+import type { HiddenAgent, Room } from '../types'
 
 export interface RoomNodeData extends Record<string, unknown> {
   room: Room
@@ -9,13 +9,28 @@ export interface RoomNodeData extends Record<string, unknown> {
   liveCount: number
   envelopeCount: number
   branch: string
+  hiddenAgents: HiddenAgent[]
   onSpawn: (room: Room) => void
   onRemove: (room: Room) => void
+  onRestore: (agent: HiddenAgent) => void
 }
 
 export function RoomNode({ data }: NodeProps): JSX.Element {
   const d = data as RoomNodeData
   const accent = colorFor(d.room.id).body
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onClickAway = (e: MouseEvent): void => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onClickAway)
+    return () => document.removeEventListener('mousedown', onClickAway)
+  }, [menuOpen])
 
   return (
     <div className="room-node" style={{ borderTopColor: accent }}>
@@ -37,6 +52,39 @@ export function RoomNode({ data }: NodeProps): JSX.Element {
           <span className="room-count">
             {d.liveCount}/{d.agentCount}
           </span>
+          {d.hiddenAgents.length > 0 && (
+            <div className="room-restore" ref={menuRef}>
+              <button
+                type="button"
+                className="room-btn"
+                title="Removed agents - bring one back"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setMenuOpen((v) => !v)
+                }}
+              >
+                ↺ {d.hiddenAgents.length}
+              </button>
+              {menuOpen && (
+                <div className="room-restore-menu" onClick={(e) => e.stopPropagation()}>
+                  <div className="room-restore-title">Bring back an agent</div>
+                  {d.hiddenAgents.map((agent) => (
+                    <button
+                      key={agent.sessionId}
+                      type="button"
+                      className="room-restore-item"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        d.onRestore(agent)
+                      }}
+                    >
+                      {truncate(agent.name, 34)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <button
             type="button"
             className="room-btn"

@@ -42,4 +42,13 @@ export interface Agent {
   kind?: string
 }
 
+/** A removed session, kept around only so a room's "bring back" menu can
+ *  offer to restore it. */
+export interface HiddenAgent {
+  sessionId: string
+  name: string
+  roomId: string
+  lastActive: number
+}
+
 export {}

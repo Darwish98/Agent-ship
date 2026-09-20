@@ -16,7 +16,7 @@ import { OrchestratorNode } from './components/OrchestratorNode'
 import { RoomNode } from './components/RoomNode'
 import { TaskDialog, type TaskDialogSpec } from './components/TaskDialog'
 import { useAgentWorld } from './hooks/useAgentWorld'
-import type { Agent, Room } from './types'
+import type { Agent, HiddenAgent, Room } from './types'
 
 const ROOM_W = 480
 const ROOM_H = 360
@@ -68,9 +68,6 @@ export default function App(): JSX.Element {
   const { rooms, agents, settings, weeklyTokens } = world
 
   const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(new Map())
-  const [motion, setMotion] = useState<
-    Map<string, { walking: boolean; facingLeft: boolean; duration: number }>
-  >(new Map())
   const [links, setLinks] = useState<OrchestratorLink[]>([])
   const [dialog, setDialog] = useState<TaskDialogSpec | null>(null)
   const agentsRef = useRef(agents)
@@ -103,52 +100,6 @@ export default function App(): JSX.Element {
       return next
     })
   }, [agents, neighbours])
-
-  // The world stays alive between events - but only agents that are actually
-  // working move. A finished session from yesterday pacing its room like a
-  // live one is what made the building read as a demo.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const steps: { key: string; from: Spot; to: Spot }[] = []
-
-      setPositions((prev) => {
-        const next = new Map(prev)
-        for (const agent of agentsRef.current) {
-          if (!agent.live) continue
-          if (Math.random() > 0.45) continue
-          const from = next.get(agent.key)
-          const to = spotAwayFrom(neighbours(agent.roomId, agent.key, next))
-          next.set(agent.key, to)
-          if (from) steps.push({ key: agent.key, from, to })
-        }
-        return next
-      })
-
-      if (!steps.length) return
-
-      // Walk at a roughly constant speed rather than easing every move into
-      // the same slot - a short shuffle and a long stroll should not take the
-      // same time, which is what made the movement look like gliding.
-      setMotion((prev) => {
-        const next = new Map(prev)
-        for (const { key, from, to } of steps) {
-          const dist = Math.hypot(to.x - from.x, to.y - from.y)
-          const duration = Math.min(2600, Math.max(500, Math.round(dist * 11)))
-          next.set(key, { walking: true, facingLeft: to.x < from.x, duration })
-          window.setTimeout(() => {
-            setMotion((m) => {
-              const after = new Map(m)
-              const cur = after.get(key)
-              if (cur) after.set(key, { ...cur, walking: false })
-              return after
-            })
-          }, duration)
-        }
-        return next
-      })
-    }, 2600)
-    return () => clearInterval(timer)
-  }, [neighbours])
 
   const persistLinks = useCallback(async (next: OrchestratorLink[]) => {
     setLinks(next)
@@ -230,7 +181,7 @@ export default function App(): JSX.Element {
       setDialog({
         title: `Remove ${agent.name}?`,
         subtitle: 'Takes this finished session out of the building.',
-        warning: ['Its transcript is left untouched on disk - nothing is deleted.'],
+        warning: ["You can bring it back anytime from this room's ↺ menu."],
         taskField: false,
         submitLabel: 'Remove',
         onSubmit: async () => {
@@ -238,6 +189,13 @@ export default function App(): JSX.Element {
           return null
         }
       })
+    },
+    [world]
+  )
+
+  const restoreAgent = useCallback(
+    (agent: HiddenAgent) => {
+      void world.restoreAgent(agent.sessionId)
     },
     [world]
   )
@@ -344,15 +302,19 @@ export default function App(): JSX.Element {
           liveCount: roomAgents.filter((a) => a.live).length,
           envelopeCount: roomAgents.filter((a) => a.hasEnvelope).length,
           branch: roomAgents.find((a) => a.branch)?.branch ?? '',
+          hiddenAgents: world.hiddenByRoom.get(room.id) ?? [],
           onSpawn: openSpawn,
-          onRemove: (r: Room) => void removeRoom(r)
+          onRemove: (r: Room) => void removeRoom(r),
+          onRestore: restoreAgent
         }
       })
 
       for (const agent of roomAgents) {
-        const m = motion.get(agent.key)
-        // extent:'parent' is what guarantees a wandering agent can never be
-        // clipped by its room's edge.
+        // extent:'parent' is what guarantees an agent can never be clipped by
+        // its room's edge. Agents get a spot once and hold it - only that
+        // one-time placement transitions, so the orchestrator's link line
+        // (which tracks this same position) never has to chase a moving
+        // target.
         out.push({
           id: agent.key,
           type: 'agent',
@@ -360,12 +322,9 @@ export default function App(): JSX.Element {
           extent: 'parent',
           position: positions.get(agent.key) ?? randomSpot(),
           draggable: false,
-          // Linear, distance-scaled: a walk, not an ease-in-out glide.
-          style: { transition: `transform ${m?.duration ?? 900}ms linear` },
+          style: { transition: 'transform 500ms ease' },
           data: {
             agent,
-            walking: m?.walking ?? false,
-            facingLeft: m?.facingLeft ?? false,
             onOpen: openInClaudeCode,
             onDelete: deleteAgent
           }
@@ -378,15 +337,16 @@ export default function App(): JSX.Element {
     rooms,
     agents,
     positions,
-    motion,
     links.length,
     envelopeAgents.length,
+    world.hiddenByRoom,
     openSpawn,
     removeRoom,
     openMergeAll,
     openOrchestratorBrief,
     openInClaudeCode,
-    deleteAgent
+    deleteAgent,
+    restoreAgent
   ])
 
   const edges = useMemo<Edge[]>(() => {
