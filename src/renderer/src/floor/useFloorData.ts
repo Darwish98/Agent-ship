@@ -86,8 +86,14 @@ export function useFloorData(active: boolean): FloorData {
       status: a.status,
       projectId: a.roomId,
       live: a.live,
+      // Claude Code reports a running session as busy or idle. Without that (a
+      // session known only from hook events) assume it is working.
+      working: a.live && (a.procStatus ? a.procStatus !== 'idle' : true),
       needsInput: needsInputStatus(a.procStatus),
       lastActive: a.lastActive,
+      cwd: a.cwd,
+      dirtyFiles: a.dirtyFiles,
+      aheadCommits: a.aheadCommits,
       branch: a.branch,
       contextTokens: a.contextTokens,
       contextLimit: a.contextLimit,

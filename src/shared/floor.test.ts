@@ -34,7 +34,7 @@ function makeRun(opts: {
 
 const session = (over: Partial<SessionLite> = {}): SessionLite => ({
   sessionId: `s${++n}`, name: 'nova', role: 'Dev', task: 'do a thing', status: 'busy', projectId: 'p1', live: true,
-  needsInput: false, lastActive: NOW - 60_000, branch: '', contextTokens: 1, contextLimit: 10, ...over
+  working: true, needsInput: false, lastActive: NOW - 60_000, cwd: '/r', dirtyFiles: 0, aheadCommits: 0, branch: '', contextTokens: 1, contextLimit: 10, ...over
 })
 
 const branch = (over: Partial<BranchLite> = {}): BranchLite => ({
@@ -208,7 +208,8 @@ function landRun(opts: { branch?: string; startedAt?: number; project?: string; 
 describe('the pipeline inside every task', () => {
   it('a session that is still working has only built so far', () => {
     expect(pipelineForSession(session({ live: true })).map((s) => `${s.id}:${s.state}`).join(' ')).toBe('build:running test:idle merge:idle land:idle')
-    expect(pipelineForSession(session({ live: false })).map((s) => s.state)).toEqual(['passed', 'idle', 'idle', 'idle'])
+    // Finished with nothing left behind: built, and there is nothing to test, merge or land.
+    expect(pipelineForSession(session({ live: false })).map((s) => s.state)).toEqual(['passed', 'skipped', 'skipped', 'skipped'])
   })
 
   it('a flow run maps agents to Build, gates to Test, and marks Merge and Land as not part of it', () => {
@@ -271,3 +272,62 @@ describe('the pipeline inside every task', () => {
     expect(states(f.byLane.done[0])).toBe('build:passed test:passed merge:passed land:passed')
   })
 });
+
+describe('an open session that has finished its turn', () => {
+  it('is not "building" any more: Build is done, and what it left behind is what the next stages wait for', () => {
+    const s = session({ live: true, working: false, dirtyFiles: 29, name: 'Platform plan implementation' })
+    const f = derive({ sessions: [s] })
+    expect(f.byLane.running).toHaveLength(0)
+    expect(f.byLane.ready).toHaveLength(1)
+    const item = f.byLane.ready[0]
+    expect(item.subtitle).toBe('29 uncommitted files')
+    expect(states(item)).toBe('build:passed test:idle merge:idle land:idle')
+    expect(item.pipeline[1].note).toMatch(/29 uncommitted files\. Commit them/)
+    expect(item.pipeline[0].note).toMatch(/waiting for your next prompt/)
+  })
+
+  it('counts unmerged commits too, and pluralises properly', () => {
+    const f = derive({ sessions: [session({ live: true, working: false, dirtyFiles: 1, aheadCommits: 3 })] })
+    expect(f.byLane.ready[0].subtitle).toBe('1 uncommitted file, 3 unmerged commits')
+  })
+
+  it('with nothing left behind it simply rests in Done', () => {
+    const f = derive({ sessions: [session({ live: true, working: false })] })
+    expect(f.byLane.running).toHaveLength(0)
+    expect(f.byLane.done).toHaveLength(1)
+    expect(states(f.byLane.done[0])).toBe('build:passed test:skipped merge:skipped land:skipped')
+  })
+
+  it('a session that is mid-turn is still Running, with Build lit', () => {
+    const f = derive({ sessions: [session({ live: true, working: true, dirtyFiles: 5 })] })
+    expect(f.byLane.running).toHaveLength(1)
+    expect(f.byLane.ready).toHaveLength(0)
+    expect(states(f.byLane.running[0])).toBe('build:running test:idle merge:idle land:idle')
+  })
+
+  it('a session that is not open any more shows the same story', () => {
+    const f = derive({ sessions: [session({ live: false, dirtyFiles: 2 })] })
+    expect(f.byLane.ready[0].subtitle).toBe('2 uncommitted files')
+  })
+
+  it('does not blame every session in a shared checkout: the most recently active one owns the pending work', () => {
+    const older = session({ live: false, working: false, dirtyFiles: 29, cwd: '/shared', lastActive: NOW - 3 * HOUR, name: 'older' })
+    const newer = session({ live: true, working: false, dirtyFiles: 29, cwd: '/shared', lastActive: NOW - 60_000, name: 'newer' })
+    const f = derive({ sessions: [older, newer] })
+    expect(f.byLane.ready.map((i) => i.title)).toEqual(['newer'])
+    expect(f.byLane.done.map((i) => i.title)).toEqual(['older'])
+  })
+
+  it('work that is already on a branch is shown by the branch card, not twice', () => {
+    const s = session({ live: true, working: false, dirtyFiles: 3, branch: 'feat/x' })
+    const f = derive({ sessions: [s], branches: [branch()] })
+    expect(f.items.filter((i) => i.kind === 'session')).toHaveLength(0)
+    expect(f.byLane.ready).toHaveLength(1)
+  })
+
+  it('a session waiting for input is still Needs you, not "finished"', () => {
+    const f = derive({ sessions: [session({ live: true, working: false, needsInput: true })] })
+    expect(f.byLane.needs).toHaveLength(1)
+    expect(states(f.byLane.needs[0])).toBe('build:awaiting test:idle merge:idle land:idle')
+  })
+})

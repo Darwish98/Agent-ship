@@ -52,6 +52,10 @@ fs.writeFileSync(path.join(other, 'README.md'), 'other\n')
 gitOther('add', '-A')
 gitOther('commit', '-q', '-m', 'init')
 
+// Work a session has done but not committed.
+fs.writeFileSync(path.join(project, 'wip-1.txt'), 'x\n')
+fs.writeFileSync(path.join(project, 'wip-2.txt'), 'y\n')
+
 fs.writeFileSync(path.join(userData, 'shipyard.json'), JSON.stringify([{ id: 'smoke1', name: 'demo-project', path: project }]))
 
 // A blueprint written by hand (the schema fills in defaults), so the test also
@@ -86,12 +90,20 @@ fs.writeFileSync(
 
 // The fake CLI: builds on the first call, and only "fixes" the code when asked
 // to repair (a --resume), so the gate fails once and the loop is exercised.
+const agentsFile = path.join(tmp, 'agents.json')
+const setAgents = (status) =>
+  fs.writeFileSync(agentsFile, JSON.stringify([{ pid: 4242, cwd: project, kind: 'interactive', sessionId: 'smoke-0', name: 'crew0', status, startedAt: Date.now() }]))
+setAgents('busy')
 const fake = path.join(tmp, 'fake-claude.cjs')
 fs.writeFileSync(
   fake,
   `const fs = require('fs')
 const a = process.argv.slice(2)
 const at = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : '' }
+if (a[0] === 'agents') {
+  try { process.stdout.write(fs.readFileSync(${JSON.stringify(agentsFile)}, 'utf8')) } catch { process.stdout.write('[]') }
+  process.exit(0)
+}
 let input = ''
 process.stdin.on('data', (d) => (input += d))
 process.stdin.on('end', () => {
@@ -222,6 +234,27 @@ try {
   check((await count('.fl-proj')) >= 1, 'the registered project is listed even before it has any work')
   await shot('1-floor')
 
+  // --- 1b. A session that finished its turn is no longer "building" ---------------
+  console.log('Session state')
+  // crew0 is the session that was last active in the checkout, so it is the one
+  // that owns the uncommitted files (three sessions share this directory).
+  await postEvent({ sessionId: 'smoke-0', agentName: 'crew0', role: 'Dev', projectPath: project, project: 'demo-project', hookEvent: 'PreToolUse', toolName: 'Edit' })
+  // Every check is pinned to crew0, so nothing else on this machine can satisfy it.
+  const crew0 = (lane) =>
+    `[...document.querySelectorAll('.fc.fc-k-session.fc-lane-${lane}')].find(e => e.querySelector('.fc-title')?.textContent === 'crew0')`
+  const inLane = (lane) => evalJs(`Boolean(${crew0(lane)})`)
+  check(await waitFor(() => inLane('running'), 15000), 'while Claude Code reports it busy, crew0 is in Running')
+  check(await evalJs(`(${crew0('running')}?.querySelector('.pl-stage.pl-running')?.textContent ?? '').includes('Build')`), 'and Build is lit')
+  setAgents('idle') // it finished its response; the process is still open
+  check(await waitFor(() => inLane('ready'), 40000), 'once it reports idle it leaves Running for Ready (finished, not landed)')
+  check(!(await inLane('running')), 'and is no longer counted as building')
+  check(await evalJs(`(${crew0('ready')}?.textContent ?? '').includes('uncommitted file')`), 'its card says it left uncommitted files behind')
+  check(
+    (await evalJs(`[...(${crew0('ready')}?.querySelectorAll('.pl-stage') ?? [])].map(e => e.className.match(/pl-(passed|idle|running|skipped|failed)/)?.[1]).join()`)) === 'passed,idle,idle,idle',
+    'the pipeline reads Build done, then Test, Merge and Land waiting'
+  )
+  await shot('1b-idle-session')
+
   // --- 2. A whole run, launched from the Floor ----------------------------------
   console.log('Run a flow from the Floor')
   check(await clickText('.fl-proj-actions .fl-link', 'Run a flow'), 'opened the project launchpad')
@@ -235,7 +268,7 @@ try {
   await shot('2-dialog')
   check(await clickText('.rdlg .btn-primary', 'Start run'), 'started the run')
 
-  check(await waitFor(() => count('.fc-run'), 8000), 'a run card appeared on the Floor')
+  check(await waitFor(() => count('.fc-k-run'), 8000), 'a run card appeared on the Floor')
   await shot('3-running')
 
   // The branch shows up in "Ready to land" once the run passes, verified by its gate.
@@ -284,7 +317,7 @@ try {
   await shot('5b-land-dialog')
   const mainBefore = git('rev-parse', 'main')
   check(await clickText('.rdlg .btn-primary', 'Land it'), 'started landing')
-  check(await waitFor(() => count('.fc-lane-running.fc-branch'), 8000) || (await waitFor(() => git('rev-parse', 'main') !== mainBefore, 30000)), 'the branch card moved to Running while it landed')
+  check(await waitFor(() => count('.fc-k-branch.fc-lane-running'), 8000) || (await waitFor(() => git('rev-parse', 'main') !== mainBefore, 30000)), 'the branch card moved to Running while it landed')
   check(await waitFor(() => git('rev-parse', 'main') !== mainBefore, 45000), 'main moved')
   const landed = git('ls-tree', '-r', '--name-only', 'main')
   check(landed.includes('built.txt') && landed.includes('fixed.txt'), 'main now contains the branch’s work')

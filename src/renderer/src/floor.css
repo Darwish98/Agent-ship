@@ -408,6 +408,18 @@
   font-weight: 600;
 }
 
+.fc-pending {
+  margin: 0;
+  padding: 3px 8px;
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 600;
+  color: #7c5a1c;
+  background: #f8efd9;
+  border: 1px solid #e6cf9b;
+  border-radius: 8px;
+}
+
 .fc-branch {
   font-family: var(--font-mono);
   font-size: 10.5px;

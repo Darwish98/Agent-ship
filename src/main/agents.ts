@@ -3,6 +3,7 @@
 // here also shows up in `claude agents` / /resume, not just in this app.
 import { shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
+import { commandPrefix } from './engine/adapter'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
@@ -31,7 +32,9 @@ export interface RunningAgent {
  */
 export async function listRunningAgents(): Promise<RunningAgent[]> {
   try {
-    const { stdout } = await run('claude', ['agents', '--json'], {
+    // Same test seam as the engine: AGENT_SHIP_CLAUDE_CMD swaps the CLI.
+    const [bin, ...prefix] = commandPrefix()
+    const { stdout } = await run(bin, [...prefix, 'agents', '--json'], {
       windowsHide: true,
       timeout: 15_000,
       maxBuffer: 4 * 1024 * 1024

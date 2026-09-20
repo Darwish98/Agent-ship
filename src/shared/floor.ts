@@ -20,8 +20,14 @@ export interface SessionLite {
   status: string
   projectId: string
   live: boolean
+  /** Actually mid-turn. A live session that is idle is open, but its work is finished for now. */
+  working: boolean
   needsInput: boolean
   lastActive: number
+  cwd: string
+  /** Uncommitted files and unmerged commits in this session's checkout. */
+  dirtyFiles: number
+  aheadCommits: number
   branch: string
   contextTokens: number
   contextLimit: number
@@ -162,13 +168,40 @@ export function pipelineForRun(run: RunView): PipelineStage[] {
   })
 }
 
-/** The pipeline of a session working outside any flow: it can only be building. */
+/** Uncommitted files and unmerged commits: work that exists but has not left the session. */
+export function pendingWork(s: Pick<SessionLite, 'dirtyFiles' | 'aheadCommits'>): string {
+  const parts: string[] = []
+  if (s.dirtyFiles > 0) parts.push(`${s.dirtyFiles} uncommitted file${s.dirtyFiles === 1 ? '' : 's'}`)
+  if (s.aheadCommits > 0) parts.push(`${s.aheadCommits} unmerged commit${s.aheadCommits === 1 ? '' : 's'}`)
+  return parts.join(', ')
+}
+
+/**
+ * The pipeline of a session working outside any flow. Build is only "running"
+ * while it is actually mid-turn: an open session that has finished its
+ * response has finished building, and whatever it left behind (uncommitted
+ * files, unmerged commits) is what the later stages are waiting for.
+ */
 export function pipelineForSession(s: SessionLite): PipelineStage[] {
+  if (s.live && s.needsInput) return [stage('build', 'awaiting', 'Waiting for your input.'), stage('test', 'idle', ''), stage('merge', 'idle', ''), stage('land', 'idle', '')]
+  if (s.live && s.working) {
+    return [stage('build', 'running', 'Working now.'), stage('test', 'idle', 'Nothing to test until it finishes.'), stage('merge', 'idle', ''), stage('land', 'idle', '')]
+  }
+  const done = s.live ? 'Finished its turn and is waiting for your next prompt.' : 'Finished.'
+  const pending = pendingWork(s)
+  if (!pending) {
+    return [
+      stage('build', 'passed', done),
+      stage('test', 'skipped', 'No changes to test.'),
+      stage('merge', 'skipped', 'Nothing to merge.'),
+      stage('land', 'skipped', 'Nothing to land.')
+    ]
+  }
   return [
-    stage('build', s.live ? (s.needsInput ? 'awaiting' : 'running') : 'passed', s.live ? 'Working now.' : 'Finished.'),
-    stage('test', 'idle', 'Nothing has checked this work yet.'),
-    stage('merge', 'idle', 'Not merged.'),
-    stage('land', 'idle', 'Not landed.')
+    stage('build', 'passed', done),
+    stage('test', 'idle', `${pending}. Commit them to a branch and they can be tested and landed.`),
+    stage('merge', 'idle', 'Waiting for a commit.'),
+    stage('land', 'idle', 'Waiting for a commit.')
   ]
 }
 
@@ -339,16 +372,33 @@ export function deriveFloor(input: FloorInput): FloorModel {
     })
   }
 
-  let hiddenOlder = 0
+  // Several sessions can share one checkout, and its uncommitted files are
+  // not all theirs. Attribute pending work to the session that was active in
+  // it most recently (the best guess available), not to all of them.
+  const owner = new Map<string, SessionLite>()
   for (const s of sessions) {
+    if (s.dirtyFiles === 0 && s.aheadCommits === 0) continue
+    const cur = owner.get(s.cwd)
+    if (!cur || s.lastActive > cur.lastActive) owner.set(s.cwd, s)
+  }
+
+  let hiddenOlder = 0
+  for (const raw of sessions) {
+    const owns = owner.get(raw.cwd)?.sessionId === raw.sessionId
+    const s: SessionLite = owns ? raw : { ...raw, dirtyFiles: 0, aheadCommits: 0 }
     if (runSessionIds.has(s.sessionId)) continue // shown inside its run
     const base = { id: `session:${s.sessionId}`, kind: 'session' as const, projectId: s.projectId, title: s.name, subtitle: s.task, updatedAt: s.lastActive, session: s, pipeline: pipelineForSession(s), authors: [] as string[], authorSessions: [] as SessionLite[] }
     if (s.live && s.needsInput) {
       items.push({ ...base, lane: 'needs', reasons: ['Waiting for your input'], priority: 70 })
-    } else if (s.live) {
+    } else if (s.live && s.working) {
       items.push({ ...base, lane: 'running', reasons: [], priority: 30 })
     } else if (s.branch && branchKeys.has(`${s.projectId}:${s.branch}`)) {
       // Its work is the branch card.
+    } else if (pendingWork(s)) {
+      // Finished its turn, but what it made has not been committed or landed.
+      // That is the next thing to do, so it belongs with finished work. It goes
+      // last: it cannot be landed until it is committed.
+      items.push({ ...base, lane: 'ready', subtitle: pendingWork(s), reasons: [], priority: -2 })
     } else if (now - s.lastActive <= DONE_WINDOW_MS) {
       items.push({ ...base, lane: 'done', reasons: [], priority: 0 })
     } else {

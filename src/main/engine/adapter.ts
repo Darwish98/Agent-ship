@@ -60,7 +60,7 @@ export function buildClaudeArgs(req: StepRequest): string[] {
 }
 
 /** Test seam: run something else in place of the real CLI (a JSON array). */
-function commandPrefix(): string[] {
+export function commandPrefix(): string[] {
   const raw = process.env.AGENT_SHIP_CLAUDE_CMD
   if (raw) {
     try {

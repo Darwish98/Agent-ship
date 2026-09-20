@@ -1,5 +1,5 @@
 import type { JSX, ReactNode, SyntheticEvent } from 'react'
-import type { Verification, WorkItem } from '../../../shared/floor'
+import { pendingWork, type Verification, type WorkItem } from '../../../shared/floor'
 import { isActive } from '../../../shared/runs'
 import { AgentSprite } from '../components/AgentSprite'
 import { badgeFor, formatAgo, formatTokens, truncate } from '../lib/crew'
@@ -51,7 +51,9 @@ export function VerifyBadge({ v }: { v: Verification }): JSX.Element {
 function Shell({ item, selected, projectName, actions, kind, children }: CardProps & { kind: string; children: ReactNode }): JSX.Element {
   return (
     <div
-      className={`fc fc-${item.kind} fc-lane-${item.lane}${selected ? ' fc-selected' : ''}`}
+      // `fc-k-*` (not `fc-session` / `fc-branch`, which are inner elements' classes:
+      // sharing the name once restyled whole cards as if they were that inner row).
+      className={`fc fc-k-${item.kind} fc-lane-${item.lane}${selected ? ' fc-selected' : ''}`}
       role="button"
       tabIndex={0}
       onClick={() => actions.select(item.id)}
@@ -130,13 +132,20 @@ export function SessionCard(props: CardProps): JSX.Element {
           <span className="role-chip" style={{ background: badge.color }}>
             {badge.code}
           </span>{' '}
-          <span className="fc-status">{s.live ? truncate(s.status, 30) : formatAgo(s.lastActive)}</span>
+          <span className="fc-status">
+            {s.live && s.working ? truncate(s.status, 30) : s.live ? 'open · waiting for you' : formatAgo(s.lastActive)}
+          </span>
           <div className={`fc-ctx fc-ctx-${tone}`} title={`${Math.round(left * 100)}% of context left (${formatTokens(s.contextTokens)} used)`}>
             <div style={{ width: `${Math.max(3, left * 100)}%` }} />
           </div>
         </div>
       </div>
       {item.reasons.length > 0 ? <p className="fc-reason">{item.reasons[0]}</p> : s.task && <p className="fc-sub">{truncate(s.task, 90)}</p>}
+      {pendingWork(s) && !s.working && (
+        <p className="fc-pending" title="Work this session left in its checkout. Commit it to a branch to test and land it.">
+          ✎ {pendingWork(s)}
+        </p>
+      )}
       {s.branch && <p className="fc-branch">{s.branch}</p>}
       <div className="fc-actions" onClick={stop}>
         <button type="button" className="btn fc-btn" onClick={() => actions.openSession(s.sessionId)}>
