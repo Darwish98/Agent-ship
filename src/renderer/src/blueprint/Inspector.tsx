@@ -159,7 +159,10 @@ function NodeFields({ node, onNode }: { node: BlueprintNode; onNode: Props['onNo
     case 'fanout': {
       const c = node.config
       return (
-        <Field label="Copies" hint="Each copy runs the connected node in parallel.">
+        <Field
+          label="Copies"
+          hint="The chain between this and its Join runs this many times, each copy in its own branch. Up to 4 run at once; the rest queue. Only agents and command gates can be inside."
+        >
           <input
             type="number"
             min={2}
@@ -190,6 +193,21 @@ function NodeFields({ node, onNode }: { node: BlueprintNode; onNode: Props['onNo
               <option value="best">all finish, keep the best</option>
             </select>
           </Field>
+          <p className="insp-hint">
+            {c.strategy === 'all' && 'Every copy must pass. All their branches are kept and the flow continues with no single branch.'}
+            {c.strategy === 'first' && 'The first copy to pass wins; the others are stopped. The losing branches are deleted.'}
+            {c.strategy === 'quorum' && 'Continues once enough copies have passed; the rest are stopped. All passing branches are kept.'}
+            {c.strategy === 'best' && 'Every copy runs and is checked by its own gates. A judge agent then reads each passing branch and keeps the best; the losing branches are deleted. With only one passing copy there is no judge and no cost.'}
+          </p>
+          {c.strategy === 'best' && (
+            <Field label="What makes one better" hint="Given to the judge. Its cost counts against this node's dollar limit, or the flow default.">
+              <textarea
+                rows={3}
+                value={c.criteria}
+                onChange={(e) => onNode({ ...node, config: { ...c, criteria: e.target.value } }, key('criteria'))}
+              />
+            </Field>
+          )}
           {c.strategy === 'quorum' && (
             <Field label="Quorum">
               <input

@@ -201,7 +201,8 @@ const PIPELINE: Blueprint = {
 const TOURNAMENT: Blueprint = {
   schemaVersion: SCHEMA_VERSION,
   name: 'Best-of-N tournament',
-  description: 'N agents solve the same task in separate branches; the best passing one is merged.',
+  description:
+    'N agents solve the same task in separate branches, each held to your tests. A judge picks the best passing one; it is merged, re-tested, and landed.',
   version: 1,
   defaultBudget: { maxTokens: 300_000, maxUsd: 1 },
   inputs: [{ name: 'task', label: 'Task every contender attempts', required: true }],
@@ -214,35 +215,64 @@ const TOURNAMENT: Blueprint = {
       position: at(1),
       config: { count: 3 }
     },
-    agent('contender', 'Contender', '{{task}}', 2, { worktree: true, edit: true, maxTokens: 300_000, maxUsd: 1 }),
-    {
-      id: 'pick',
-      kind: 'join',
-      label: 'Pick the best',
-      position: at(3),
-      config: { strategy: 'best', quorum: 2 }
-    },
+    agent(
+      'contender',
+      'Contender',
+      '{{task}}\n\nYou are contender {{copy}} of {{copies}}, working alone in your own branch. Take the approach you think is best.',
+      2,
+      { worktree: true, edit: true, maxTokens: 300_000, maxUsd: 0.5 }
+    ),
     {
       id: 'tests',
       kind: 'gate',
       label: 'Tests pass',
+      position: at(3),
+      budget: { maxRetries: 1 },
+      config: { check: 'command', command: 'npm test', instructions: '' }
+    },
+    {
+      id: 'pick',
+      kind: 'join',
+      label: 'Judge picks the best',
       position: at(4),
+      budget: { maxUsd: 0.3 },
+      config: {
+        strategy: 'best',
+        quorum: 2,
+        criteria: 'Correctness first, then the smallest change that fully does the job, then clarity.'
+      }
+    },
+    {
+      id: 'merge',
+      kind: 'merge',
+      label: 'Merge the winner',
+      position: at(5),
+      config: { baseBranch: 'main', resolveConflicts: true, resolverPrompt: '' }
+    },
+    {
+      id: 'verify',
+      kind: 'gate',
+      label: 'Tests on the merge',
+      position: at(6),
       config: { check: 'command', command: 'npm test', instructions: '' }
     },
     {
       id: 'land',
-      kind: 'merge',
+      kind: 'land',
       label: 'Land it',
-      position: at(5),
-      config: { baseBranch: 'main', resolveConflicts: true, resolverPrompt: '' }
+      position: at(7),
+      config: { baseBranch: 'main' }
     }
   ],
   edges: [
     edge('start', 'spread', 'control'),
     edge('spread', 'contender'),
-    edge('contender', 'pick', 'branch'),
-    edge('pick', 'tests', 'branch'),
-    edge('tests', 'land', 'branch', 'pass')
+    edge('contender', 'tests', 'branch'),
+    edge('tests', 'pick', 'verdict', 'pass'),
+    edge('tests', 'contender', 'verdict', 'fail'),
+    edge('pick', 'merge', 'branch'),
+    edge('merge', 'verify', 'branch'),
+    edge('verify', 'land', 'branch', 'pass')
   ]
 }
 

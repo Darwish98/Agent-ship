@@ -30,6 +30,9 @@ export type RunEvent =
       cwd: string
       branch?: string
       sessionId?: string
+      /** Which parallel copy this step belongs to (1-based), out of `copies`. */
+      copy?: number
+      copies?: number
     })
   | (Base & {
       type: 'node.finished'
@@ -41,6 +44,8 @@ export type RunEvent =
       summary: string
       error?: string
       branch?: string
+      /** A Join's winner: the working copy the flow continues in. */
+      cwd?: string
     })
   | (Base & { type: 'gate.awaiting'; nodeId: string; attempt: number; instructions: string })
   | (Base & {
@@ -66,6 +71,8 @@ export interface StepRecord {
   /** Agent's final text, or a gate's output tail / a reviewer's note. */
   detail: string
   branch?: string
+  /** Set for steps that ran as one of several parallel copies. */
+  copy?: number
 }
 
 export interface NodeRun {
@@ -128,35 +135,45 @@ export function foldRun(events: readonly RunEvent[]): RunView | null {
 
   const stepFor = (nodeId: string, attempt: number): StepRecord | undefined =>
     view.steps.find((s) => s.nodeId === nodeId && s.attempt === attempt)
+  // Parallel copies run the same node at once, so a node is "running" while any
+  // execution of it is still open, and only then takes its last result.
+  const open = new Map<string, number>()
+  const bump = (id: string, by: number): number => {
+    const next = Math.max(0, (open.get(id) ?? 0) + by)
+    open.set(id, next)
+    return next
+  }
 
   for (const e of events) {
     switch (e.type) {
       case 'node.started': {
         const n = view.nodes[e.nodeId]
         if (!n) break
+        bump(e.nodeId, 1)
         n.state = 'running'
         n.attempts = Math.max(n.attempts, e.attempt)
         if (e.sessionId) n.sessionId = e.sessionId
         if (e.branch) n.branch = e.branch
         view.currentNodeId = e.nodeId
         view.status = 'running'
-        view.steps.push({ nodeId: e.nodeId, attempt: e.attempt, state: 'running', startedAt: e.at, costUsd: 0, tokens: 0, detail: '', branch: e.branch })
+        view.steps.push({ nodeId: e.nodeId, attempt: e.attempt, state: 'running', startedAt: e.at, costUsd: 0, tokens: 0, detail: '', branch: e.branch, copy: e.copy })
         break
       }
       case 'node.finished': {
         const n = view.nodes[e.nodeId]
         if (!n) break
-        n.state = e.status
+        n.state = bump(e.nodeId, -1) > 0 ? 'running' : e.status
         n.costUsd += e.costUsd
         n.tokens += e.tokens
         n.detail = e.error ?? e.summary
+        const step = stepFor(e.nodeId, e.attempt)
         if (e.branch) {
           n.branch = e.branch
-          view.branch = e.branch
+          // A parallel copy's branch is not "the" result; the Join's winner is.
+          if (step?.copy === undefined) view.branch = e.branch
         }
         view.spentUsd += e.costUsd
         view.tokens += e.tokens
-        const step = stepFor(e.nodeId, e.attempt)
         if (step) Object.assign(step, { state: e.status, endedAt: e.at, costUsd: e.costUsd, tokens: e.tokens, detail: e.error ?? e.summary, branch: e.branch ?? step.branch })
         break
       }
@@ -176,17 +193,18 @@ export function foldRun(events: readonly RunEvent[]): RunView | null {
       case 'gate.result': {
         const n = view.nodes[e.nodeId]
         if (!n) break
-        n.state = e.pass ? 'passed' : 'failed'
+        n.state = bump(e.nodeId, -1) > 0 ? 'running' : e.pass ? 'passed' : 'failed'
         n.attempts = Math.max(n.attempts, e.attempt)
         n.detail = e.detail
         view.currentNodeId = e.nodeId
         if (view.status === 'awaiting') view.status = 'running'
         const step = stepFor(e.nodeId, e.attempt)
-        if (step) Object.assign(step, { state: n.state, endedAt: e.at, detail: e.detail })
-        else view.steps.push({ nodeId: e.nodeId, attempt: e.attempt, state: n.state, startedAt: e.at, endedAt: e.at, costUsd: 0, tokens: 0, detail: e.detail })
+        if (step) Object.assign(step, { state: e.pass ? 'passed' : 'failed', endedAt: e.at, detail: e.detail })
+        else view.steps.push({ nodeId: e.nodeId, attempt: e.attempt, state: e.pass ? 'passed' : 'failed', startedAt: e.at, endedAt: e.at, costUsd: 0, tokens: 0, detail: e.detail })
         break
       }
       case 'run.finished':
+        open.clear()
         view.status = e.status
         view.reason = e.reason
         view.endedAt = e.at

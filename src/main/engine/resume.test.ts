@@ -312,6 +312,23 @@ describe('orphan worktree sweep', () => {
     expect(git(repo, 'show', `${dead.branch}:saved.txt`)).toBe('do not lose me')
   })
 
+  it('never deletes through a linked node_modules, and drops detached scratch copies without committing', async () => {
+    fs.mkdirSync(path.join(repo, 'node_modules'))
+    fs.writeFileSync(path.join(repo, 'node_modules', 'dep.js'), 'precious\n')
+    const wt = path.join(root, 'wt')
+    const copy = await gitops.createDetachedWorktree(repo, wt, 'cccccccc-merge', 'HEAD')
+    expect(fs.lstatSync(path.join(copy.path, 'node_modules')).isSymbolicLink()).toBe(true) // the link main adds
+    fs.writeFileSync(path.join(copy.path, 'scratch.txt'), 'throwaway\n')
+    const before = git(repo, 'rev-parse', 'HEAD')
+
+    const res = await gitops.sweepWorktrees(wt, () => false)
+
+    expect(res.removed).toEqual([copy.path])
+    expect(fs.readFileSync(path.join(repo, 'node_modules', 'dep.js'), 'utf8')).toBe('precious\n')
+    expect(git(repo, 'rev-parse', 'HEAD')).toBe(before)
+    expect(git(repo, 'branch', '--list', 'agentship/*')).toBe('') // nothing was made of it
+  })
+
   it('does nothing when there is no scratch directory yet', async () => {
     expect(await gitops.sweepWorktrees(path.join(root, 'nope'), () => false)).toEqual({ removed: [], kept: [], skipped: [] })
   })

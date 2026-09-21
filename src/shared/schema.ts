@@ -41,7 +41,10 @@ const fanoutConfig = z.object({
 
 const joinConfig = z.object({
   strategy: z.enum(['all', 'first', 'quorum', 'best']).default('all'),
-  quorum: z.number().int().min(1).max(16).default(2)
+  quorum: z.number().int().min(1).max(16).default(2),
+  /** What makes one contender better than another. Used by `best`, whose
+   *  judge is an agent that reads each passing branch's diff. */
+  criteria: z.string().max(2_000).default('')
 })
 
 const gateConfig = z.object({

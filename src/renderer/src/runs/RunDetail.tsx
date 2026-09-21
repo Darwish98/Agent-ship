@@ -171,7 +171,8 @@ export function RunDetail({ run, onSelectNode, inEditor }: Props): JSX.Element {
                 <span className="rd-glyph">{STEP_GLYPH[s.state]}</span>
                 <span className="rd-step-name">
                   {nameOf(s.nodeId)}
-                  {s.attempt > 1 ? ` · attempt ${s.attempt}` : ''}
+                  {s.copy !== undefined ? ` · copy ${s.copy}` : ''}
+                  {s.copy === undefined && s.attempt > 1 ? ` · attempt ${s.attempt}` : ''}
                 </span>
                 <span className="rd-step-meta">
                   {s.costUsd > 0 ? `${formatUsd(s.costUsd)} · ${formatTokens(s.tokens)} tok` : ''}

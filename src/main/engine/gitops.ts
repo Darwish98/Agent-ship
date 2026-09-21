@@ -144,8 +144,13 @@ export async function sweepWorktrees(root: string, keep: (dirName: string) => bo
       const common = path.resolve(dir, await git(dir, ['rev-parse', '--git-common-dir']))
       if (path.basename(common) !== '.git') throw new Error('not a plain repository')
       const repo = path.dirname(common)
-      await commitAll(dir, 'agentship: work recovered after the app closed unexpectedly').catch(() => false)
-      await removeWorktree(repo, { path: dir, branch: '' })
+      // Only a branch an agent made keeps its work; a detached scratch copy (a
+      // merge or a source checkout) has no branch to commit to.
+      const detached = (await currentBranch(dir).catch(() => '')) === ''
+      if (!detached) await commitAll(dir, 'agentship: work recovered after the app closed unexpectedly').catch(() => false)
+      // The copy may still link the project's node_modules. Unlink it before
+      // removal so nothing can recurse into the real dependencies.
+      await removeWorktree(repo, { path: dir, branch: '', detached, depsLink: path.join(dir, 'node_modules') })
       if (fs.existsSync(dir)) out.skipped.push(dir)
       else out.removed.push(dir)
     } catch {
@@ -372,6 +377,15 @@ export async function diffSummary(
     removed += Number.parseInt(r, 10) || 0
   }
   return { files, added, removed }
+}
+
+/** What `branch` changed relative to `base`, as a stat plus the patch, cut to `max`
+ *  characters. For a judge that has to compare attempts without checking them out. */
+export async function diffText(repo: string, base: string, branch: string, max = 12_000): Promise<string> {
+  const stat = await git(repo, ['diff', '--stat', `${base}...${branch}`]).catch(() => '')
+  const patch = await git(repo, ['diff', '--no-color', `${base}...${branch}`]).catch(() => '')
+  const body = patch.length > max ? `${patch.slice(0, max)}\n…(patch truncated)` : patch
+  return stat ? `${stat}\n\n${body}` : body
 }
 
 /** A sensible default test command for a project, or '' when there is none to guess. */
