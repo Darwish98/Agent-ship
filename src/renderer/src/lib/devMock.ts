@@ -284,6 +284,7 @@ export function installDevMock(): void {
       pushRun({ type: 'run.finished', at: Date.now(), runId, status: 'cancelled', reason: 'Stopped by you.' })
       return true
     },
+    resumeRun: async () => ({ ok: false, error: 'Resuming needs the real app; the browser preview has no engine.' }),
     decideGate: async (runId, approve) => {
       gateResolvers.get(runId)?.(approve)
       return true

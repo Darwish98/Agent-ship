@@ -4,7 +4,7 @@ import { formatUsd } from '../../../shared/runs'
 import { AgentSprite } from '../components/AgentSprite'
 import { badgeFor, formatAgo, formatTokens, truncate } from '../lib/crew'
 import { MiniFlow } from '../runs/MiniFlow'
-import { SpendMeter, STATUS_LABEL } from '../runs/RunDetail'
+import { ResumeButton, SpendMeter, STATUS_LABEL } from '../runs/RunDetail'
 
 /** Everything a card can ask the Floor to do. Cards stay dumb; the Floor owns
  *  dialogs and IPC. */
@@ -104,6 +104,7 @@ export function RunCard(props: CardProps): JSX.Element {
         )}
         {(run.status === 'failed' || run.status === 'budget' || run.status === 'interrupted') && item.lane === 'needs' && (
           <>
+            {run.status === 'interrupted' && <ResumeButton runId={run.runId} className="btn btn-primary fc-btn" />}
             <button type="button" className="btn fc-btn" onClick={() => actions.editFlow(item)}>
               Edit flow
             </button>

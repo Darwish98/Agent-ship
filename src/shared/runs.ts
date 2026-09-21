@@ -52,6 +52,8 @@ export type RunEvent =
       detail: string
     })
   | (Base & { type: 'run.finished'; status: Exclude<RunStatus, 'running' | 'awaiting'>; reason: string; branch?: string })
+  /** An interrupted run picked up again. Reopens the run; spend carries over. */
+  | (Base & { type: 'run.resumed' })
 
 export interface StepRecord {
   nodeId: string
@@ -194,12 +196,21 @@ export function foldRun(events: readonly RunEvent[]): RunView | null {
         for (const n of Object.values(view.nodes)) if (n.state === 'running' || n.state === 'awaiting') n.state = 'failed'
         for (const s of view.steps) if (s.state === 'running' || s.state === 'awaiting') { s.state = 'failed'; s.endedAt = e.at }
         break
+      case 'run.resumed':
+        view.status = 'running'
+        view.reason = ''
+        view.endedAt = undefined
+        break
       case 'run.started':
         break
     }
   }
   return view
 }
+
+/** Only an interrupted run can be resumed: a failed or budget-stopped one
+ *  would fail again the same way, and a cancelled one was the user's choice. */
+export const isResumable = (s: RunStatus): boolean => s === 'interrupted'
 
 /** Values later prompts can reference, built from what has run so far. */
 export function promptVars(

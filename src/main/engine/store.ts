@@ -3,7 +3,7 @@
 // be rebuilt from it after a crash.
 import fs from 'node:fs'
 import path from 'node:path'
-import type { RunEvent } from '../../shared/runs'
+import { foldRun, isActive, type RunEvent } from '../../shared/runs'
 
 const RUN_ID = /^[0-9a-f-]{36}$/
 
@@ -69,7 +69,10 @@ export class RunStore {
   markInterrupted(now = Date.now()): string[] {
     const fixed: string[] = []
     for (const { runId, events } of this.list(200)) {
-      if (events.some((e) => e.type === 'run.finished')) continue
+      // Judge by the folded state, not "has a finish event": a run that was
+      // resumed after an earlier interruption is open again.
+      const view = foldRun(events)
+      if (!view || !isActive(view.status)) continue
       this.append({ type: 'run.finished', at: now, runId, status: 'interrupted', reason: 'Agent Ship closed while this run was in progress.' })
       fixed.push(runId)
     }

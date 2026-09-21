@@ -3,16 +3,19 @@
 // number of times, and leaves the result as a git branch.
 //
 // Scope, on purpose (see PLATFORM_PLAN.md, Phase 2): a single path through
-// agent and gate nodes. No parallel branches, no merge node, no resume after a
-// restart. `unrunnableReasons` rejects anything outside that up front.
+// agent and gate nodes. No parallel branches and no merge node.
+// `unrunnableReasons` rejects anything outside that up front. A run that was
+// interrupted (the app closed) can be resumed from its event log.
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
 import { renderTemplate, unrunnableReasons, usdCeiling } from '../../shared/blueprint'
-import { foldRun, promptVars, type RunEvent } from '../../shared/runs'
-import type { Blueprint, BlueprintNode } from '../../shared/schema'
+import { foldRun, isResumable, promptVars, type RunEvent } from '../../shared/runs'
+import type { Blueprint } from '../../shared/schema'
 import { killTree, type AgentAdapter } from './adapter'
 import * as git from './gitops'
+import { freshSeed, nextNode, planResume, type Seed } from './resume'
 
 export interface EngineDeps {
   adapter: AgentAdapter
@@ -46,6 +49,8 @@ const tail = (s: string, n = 6_000): string => (s.length > n ? `…(truncated)\n
 
 interface Live {
   abort: AbortController
+  /** The app is closing: end as "interrupted" (resumable), not "cancelled". */
+  suspend?: boolean
   decide?: (d: { approve: boolean; note: string }) => void
   done: Promise<void>
 }
@@ -103,16 +108,78 @@ export class RunEngine {
     }
     this.deps.emit(started)
 
-    live.done = this.execute(runId, a, live, started).finally(() => this.live.delete(runId))
+    live.done = this.execute(runId, a, live, [started], freshSeed(a.blueprint, a.projectPath)).finally(() => this.live.delete(runId))
     return { ok: true, runId }
   }
 
-  cancel(runId: string): boolean {
+  cancel(runId: string, suspend = false): boolean {
     const live = this.live.get(runId)
     if (!live) return false
+    live.suspend = suspend
     live.abort.abort()
     live.decide?.({ approve: false, note: 'Run cancelled.' })
     return true
+  }
+
+  /** For shutdown: stop every run so it can be resumed next launch. Resolves
+   *  once each has cleaned up (or `timeoutMs` passes; the sweep covers the rest). */
+  async suspendAll(timeoutMs = 8_000): Promise<void> {
+    const ids = this.activeRunIds()
+    for (const id of ids) this.cancel(id, true)
+    const all = Promise.all(ids.map((id) => this.whenDone(id)))
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([all, new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)))])
+    clearTimeout(timer)
+  }
+
+  /**
+   * Continues an interrupted run from its event log. Everything already spent,
+   * every branch and every finished session carries over; the step that was in
+   * flight when the app stopped runs again from the top.
+   */
+  async resume(events: readonly RunEvent[]): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
+    const view = foldRun(events)
+    if (!view) return { ok: false, error: 'That run has no record to resume.' }
+    if (!isResumable(view.status)) return { ok: false, error: 'Only an interrupted run can be resumed.' }
+    const runId = view.runId
+    if (this.live.has(runId)) return { ok: false, error: 'That run is already in progress.' }
+    if (this.live.size >= 4) return { ok: false, error: 'Four runs are already in progress. Let one finish first.' }
+    if (!fs.existsSync(view.projectPath)) return { ok: false, error: `${view.projectName} is no longer at ${view.projectPath}.` }
+
+    const reasons = unrunnableReasons(view.blueprint)
+    if (reasons.length) return { ok: false, error: reasons.join(' ') }
+    if (view.ceilingUsd - view.spentUsd < MIN_STEP_USD) {
+      return { ok: false, error: 'This run has used its spending ceiling, so there is nothing left to spend on resuming it.' }
+    }
+
+    const seed = planResume(events, view.blueprint, view.projectPath)
+
+    // Bring back any scratch directory that is gone (a graceful close removes
+    // them after committing; a kill may have left them half-registered).
+    for (const wt of seed.worktrees.values()) {
+      if (fs.existsSync(wt.path)) continue
+      try {
+        await git.attachWorktree(view.projectPath, wt)
+      } catch (err) {
+        return { ok: false, error: `Could not restore the working copy for ${wt.branch}: ${(err as Error).message}` }
+      }
+    }
+
+    const live: Live = { abort: new AbortController(), done: Promise.resolve() }
+    this.live.set(runId, live)
+    const resumed: RunEvent = { type: 'run.resumed', at: this.now(), runId }
+    this.deps.emit(resumed)
+
+    const a: StartArgs = {
+      projectId: view.projectId,
+      projectName: view.projectName,
+      projectPath: view.projectPath,
+      flowSlug: view.flowSlug,
+      blueprint: view.blueprint,
+      inputs: view.inputs
+    }
+    live.done = this.execute(runId, a, live, [...events, resumed], seed).finally(() => this.live.delete(runId))
+    return { ok: true, runId }
   }
 
   /** Answers a human gate. Returns false when nothing is waiting. */
@@ -125,10 +192,10 @@ export class RunEngine {
 
   // --- the walk ---------------------------------------------------------------
 
-  private async execute(runId: string, a: StartArgs, live: Live, started: RunEvent): Promise<void> {
+  private async execute(runId: string, a: StartArgs, live: Live, priorEvents: RunEvent[], seed: Seed): Promise<void> {
     const bp = a.blueprint
     // A local copy of the log, so prompts can reference earlier nodes' results.
-    const events: RunEvent[] = [started]
+    const events: RunEvent[] = [...priorEvents]
     const emit = (e: RunEvent): void => {
       events.push(e)
       this.deps.emit(e)
@@ -137,37 +204,35 @@ export class RunEngine {
     const ceilingUsd = usdCeiling(bp) ?? 0
 
     const short = runId.slice(0, 8)
-    const worktrees = new Map<string, git.Worktree>()
-    const sessions = new Map<string, { id: string; cwd: string }>()
-    const fails = new Map<string, number>()
-    const runs = new Map<string, number>()
+    const worktrees = new Map<string, git.Worktree>(seed.worktrees)
+    const sessions = new Map(seed.sessions)
+    const fails = new Map(seed.fails)
+    const runs = new Map(seed.runs)
 
-    let cwd = a.projectPath
-    let branch: string | undefined
-    let upstream = ''
-    let feedback = ''
-    let spent = 0
-    let executions = 0
+    let cwd = seed.cwd
+    let branch = seed.branch
+    let upstream = seed.upstream
+    let feedback = seed.feedback
+    let spent = seed.spent
+    let executions = seed.executions
 
     const finish = (status: Finish, reason: string): void => {
       emit({ type: 'run.finished', at: this.now(), runId, status, reason, branch })
     }
 
-    const outEdge = (n: BlueprintNode, when: 'pass' | 'fail' | 'next'): BlueprintNode | undefined => {
-      const edge = bp.edges.find((e) => {
-        if (e.from !== n.id) return false
-        if (n.kind !== 'gate') return e.condition !== 'fail'
-        return when === 'fail' ? e.condition === 'fail' : e.condition !== 'fail'
-      })
-      return edge ? bp.nodes.find((x) => x.id === edge.to) : undefined
-    }
+    /** The run ended because the user stopped it, or because the app is closing. */
+    const stopped = (): void =>
+      live.suspend
+        ? finish('interrupted', 'Agent Ship closed while this run was in progress. Resume it to continue from where it stopped.')
+        : finish('cancelled', 'Stopped by you.')
+
+    const outEdge = (n: NonNullable<Seed['node']>, when: 'pass' | 'fail' | 'next') => nextNode(bp, n, when)
 
     try {
-      const trigger = bp.nodes.find((n) => n.kind === 'trigger')!
-      let node = outEdge(trigger, 'next')
+      let node = seed.node
 
       while (node) {
-        if (live.abort.signal.aborted) return finish('cancelled', 'Stopped by you.')
+        if (live.abort.signal.aborted) return stopped()
         if (++executions > MAX_NODE_EXECUTIONS) return finish('failed', 'Stopped: too many steps (possible loop).')
 
         const attempt = (runs.get(node.id) ?? 0) + 1
@@ -225,7 +290,8 @@ export class RunEngine {
           })
 
           spent += res.costUsd
-          sessions.set(node.id, { id: res.sessionId, cwd: stepCwd })
+          // A killed or failed step may have left no resumable session behind.
+          if (res.ok) sessions.set(node.id, { id: res.sessionId, cwd: stepCwd })
 
           // Whatever the agent left becomes commits on its branch, so the
           // work survives the worktree being removed.
@@ -259,7 +325,7 @@ export class RunEngine {
             branch = stepBranch
             cwd = stepCwd
           }
-          if (res.cancelled) return finish('cancelled', 'Stopped by you.')
+          if (res.cancelled) return stopped()
           if (res.budgetExhausted) return finish('budget', `"${node.label || node.config.role}" hit its dollar limit.`)
           if (tokenBust) return finish('budget', `"${node.label || node.config.role}" exceeded its token limit.`)
           if (!res.ok) return finish('failed', `"${node.label || node.config.role}" failed: ${res.error ?? 'unknown error'}`)
@@ -292,7 +358,7 @@ export class RunEngine {
           }
 
           emit({ type: 'gate.result', at: this.now(), runId, nodeId: node.id, attempt, pass, by, detail: clip(detail, 6_000) })
-          if (live.abort.signal.aborted) return finish('cancelled', 'Stopped by you.')
+          if (live.abort.signal.aborted) return stopped()
 
           if (pass) {
             node = outEdge(node, 'pass')

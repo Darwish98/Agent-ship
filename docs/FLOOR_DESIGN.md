@@ -91,6 +91,8 @@ How it differs from the concept above:
 - **The lit stepper wraps** instead of scaling the graph, because a scaled canvas has unreadable labels at card size.
 - **The "orchestrator" card and drag-a-line links were removed.** Nothing consumed them.
 
-Not built, in priority order: an OS notification when something enters **Needs you**; keyboard triage (j/k/enter); search across projects; per-session cost for ad-hoc work; a "Land all verified" action; and replay of a finished run.
+Since built: an OS notification when a *run* enters **Needs you** (approval, failure, budget) while the window is unfocused, and a **Resume run** action on interrupted runs.
+
+Not built, in priority order: the same notification for ad-hoc sessions; keyboard triage (j/k/enter); search across projects; per-session cost for ad-hoc work; a "Land all verified" action; and replay of a finished run.
 
 Found during the build: the CLI's per-session `status` for ad-hoc sessions has only been observed as `idle`/`busy`, so "waiting for input" on ad-hoc sessions is wired but has not been seen to fire. Flow runs do not have this limit because the engine owns their state.

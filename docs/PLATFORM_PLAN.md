@@ -1,6 +1,6 @@
 # Agent Ship → an orchestration platform for coding agents
 
-Status: **revision 3 (2026-09-21). Phases 0, 1, 1.5 and 2 are built. A flow can now run end to end: gated build in its own branch, capped at a dollar ceiling, visible live on both the Floor and the editor.** It has been proven against the real `claude` CLI on toy tasks, not yet on real work. The Floor was redesigned from scratch, see [FLOOR_DESIGN.md](FLOOR_DESIGN.md). Section 12 is the honest evaluation (short answer: a credible wedge, not yet a revolution), and section 11 says what to do next.
+Status: **revision 3, amended 2026-09-21 with the first slice of Phase 3 (resume-after-restart, orphan sweep, OS notification; see §7). Phases 0, 1, 1.5 and 2 are built. A flow can now run end to end: gated build in its own branch, capped at a dollar ceiling, visible live on both the Floor and the editor.** It has been proven against the real `claude` CLI on toy tasks, not yet on real work. The Floor was redesigned from scratch, see [FLOOR_DESIGN.md](FLOOR_DESIGN.md). Section 12 is the honest evaluation (short answer: a credible wedge, not yet a revolution), and section 11 says what to do next.
 Working name stays "Agent Ship" until the product is clearer. Section 10's recommended defaults were assumed (solo developer, coding-agent flows only, Claude Code only, keep the name) since no answers were given; change them there if wrong.
 
 ---
@@ -230,9 +230,15 @@ Not done: resume after restart, parallel branches, merge node, triggers, OS noti
 
 How it was verified: 88 tests (fake adapter against a real git repo for the walk, retries, cancel, budget, human gates; store, args, floor rules). Three opt-in **live** tests against the real CLI with Haiku, a few cents each: a one-agent flow ($0.026, real branch, gate passed, worktree gone); the dollar cap stopping a run ($0.02 cap, $0.0217 spent, gate never ran); and a repair loop where the builder writes the wrong content, the gate says so, and the engine resumes the **same real session**, which fixes it ($0.035). A full-UI run in Electron drives the whole path with a fake CLI. The literal exit demo (real planner and reviewer, real project) has **not** been run.
 
-### Phase 3 — Git-native execution (≈1.5 weeks)
-- Generalise the engine: fan-out/join, parallel scheduling, cancel, resume-after-restart (all deferred from Phase 2).
-- Worktree manager: create, commit and remove already exist per run (Phase 2). Left: an **orphan sweep** for worktrees left by a crash (a killed app cannot clean up), parallel-safe naming, and a preflight message for a repo with no commits (the run start already refuses it).
+### Phase 3 — Git-native execution (≈1.5 weeks) — 🟡 first slice built (2026-09-21)
+**Built in this slice: resume-after-restart, the orphan sweep, and an OS notification.**
+- ✅ **Resume.** Closing the app now *suspends* runs: they end as `interrupted` (not `cancelled`), commit their work and remove their scratch worktrees before the process exits. A run killed outright is marked `interrupted` on the next launch. **Resume run** (Floor card and run drawer) reopens it with a `run.resumed` event and rebuilds the walker's state from the log (`src/main/engine/resume.ts`): spend, attempts, gate-failure counts, pending repair feedback, the builder's real session, the branch and each worktree. Finished steps are not repeated; the step that was in flight starts again from the top in a *new* session (a killed step may have left none), in the same branch, so whatever it wrote and had committed or left in an orphaned directory is still there. A worktree that is gone is re-attached to its branch. The recorded blueprint is used, not whatever is on disk now, so the run continues the flow the user confirmed. Refused when the run is not interrupted, is already live, or has no dollars left under its ceiling.
+- ✅ **Orphan sweep.** At startup, scratch directories that no run can resume in (finished runs, runs interrupted more than 7 days ago, unknown ones) have their uncommitted work committed onto their branch and are removed. Directories that are not recognisably a git worktree are left alone, never deleted.
+- ✅ **OS notification** when a run needs approval or fails or runs out of budget while the window is not focused. Not sent for the app's own shutdown.
+- Tested: 12 new tests, including a real suspend, restart with a new engine over the stored log, and resume; the same with an orphaned dirty directory; a prefix-replay of a whole run to check the planner at every kind of stopping point; the sweep against real worktrees. Smoke test still passes in Electron. **Not tested:** a real hard kill of Electron mid-run, and resume against the real `claude` CLI (the fake adapter stands in; the new session id path is the same one a first run uses).
+- **Still to build in this phase:** fan-out/join and parallel scheduling (the walker is still one path; this is a rewrite of `execute`, not an addition), a real judge for `join: best`, the Merge node, parsed test/lint results, and parallel-safe worktree names (today `<run>-<node>`, which fan-out instances would collide on).
+- Generalise the engine: fan-out/join, parallel scheduling, cancel.
+- Worktree manager: create, commit, remove, re-attach and sweep now exist. Preflight for a repo with no commits: the run start already refuses it.
 - Merge node: ordered merge queue, conflict detection, resolver agent, revert-on-red.
 - Gates: test/typecheck/lint runners with parsed results; retry-with-repair loop with cap.
 - **Exit:** "PR factory" flow: issue text in → tested branch out, no manual git.
@@ -292,8 +298,8 @@ How it was verified: 88 tests (fake adapter against a real git repo for the walk
 
 1. **Use it on real work before building more.** Run the Pipeline on a real task in a real repo with real models, five times. The open questions are no longer engineering ones: does the builder produce something a gate can meaningfully verify, what does it cost per task, what breaks on a real `npm test` on Windows, and how often does the repair loop converge. Everything in §12 that says "unproven" is decided here.
 2. **The competitor teardown (still not done).** Claude Code's agent view and workflows, Superset, Claude Squad, Vibe Kanban. Half a day each, before Phase 3 commits the next weeks.
-3. **Phase 3, in this order:** resume-after-restart (a killed app currently loses the run) and an orphan-worktree sweep; then fan-out/join with a real judge for "best of N"; then a Merge node so "Land" stops using the legacy agent.
-4. **Floor gaps found while building it:** OS notification when something enters Needs you; keyboard triage (j/k/enter); per-session cost for ad-hoc work (transcripts, not exact); search across projects; "Needs input" for ad-hoc sessions depends on what `claude agents --json` reports (only idle/busy observed).
+3. **Phase 3, in this order:** ~~resume-after-restart and an orphan-worktree sweep~~ (done, see §7); then fan-out/join with a real judge for "best of N"; then a Merge node so "Land" stops using the legacy agent.
+4. **Floor gaps found while building it:** ~~OS notification when something enters Needs you~~ (done for runs; not for ad-hoc sessions); keyboard triage (j/k/enter); per-session cost for ad-hoc work (transcripts, not exact); search across projects; "Needs input" for ad-hoc sessions depends on what `claude agents --json` reports (only idle/busy observed).
 5. §10's questions still stand; the recommended defaults are still assumed.
 
 ---
@@ -311,7 +317,7 @@ Method: unit tests, live tests against the real CLI, an automated end-to-end run
 
 **Weaknesses, ranked**
 1. **Unproven on real work.** Every real-CLI run so far is a toy task. Whether the pipeline yields mergeable code at a sane cost is the central unknown and the next step.
-2. **No resume.** Closing the app mid-run marks it interrupted and loses the in-flight step (the branch and commits survive). Crash-resume was promised in §5 and is not built. Worktrees orphaned by a hard kill are never swept.
+2. ~~**No resume.**~~ *Fixed after this evaluation (see §7, Phase 3): interrupted runs resume and orphaned worktrees are swept. Not yet exercised with a real hard kill of Electron or the real CLI.*
 3. **"Edit access" is weaker than it sounds.** Under `acceptEdits` a simple shell write was allowed in the spike, so containment is the worktree, not the permission mode. A step with edit access and *no* worktree edits the live checkout (the editor warns; the run confirmation says it plainly).
 4. **POSIX untested.** Everything was exercised on Windows only. Process-tree killing on macOS/Linux (`detached` + negative pid) is written but has never run.
 5. Smaller: "Needs input" for ad-hoc sessions is only as good as the CLI's status field; the Floor polls git every 30 s per project; flow `version` is never bumped; Land still uses a background agent.

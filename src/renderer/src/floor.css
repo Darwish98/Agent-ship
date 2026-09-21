@@ -1095,3 +1095,10 @@ button.mf-pill {
   border-color: var(--warn);
   background: #f8efd9;
 }
+
+.rd-error {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--low);
+}
