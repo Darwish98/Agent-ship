@@ -144,8 +144,13 @@ export async function sweepWorktrees(root: string, keep: (dirName: string) => bo
       const common = path.resolve(dir, await git(dir, ['rev-parse', '--git-common-dir']))
       if (path.basename(common) !== '.git') throw new Error('not a plain repository')
       const repo = path.dirname(common)
-      await commitAll(dir, 'agentship: work recovered after the app closed unexpectedly').catch(() => false)
-      await removeWorktree(repo, { path: dir, branch: '' })
+      // Only a branch an agent made keeps its work; a detached scratch copy (a
+      // merge or a source checkout) has no branch to commit to.
+      const detached = (await currentBranch(dir).catch(() => '')) === ''
+      if (!detached) await commitAll(dir, 'agentship: work recovered after the app closed unexpectedly').catch(() => false)
+      // The copy may still link the project's node_modules. Unlink it before
+      // removal so nothing can recurse into the real dependencies.
+      await removeWorktree(repo, { path: dir, branch: '', detached, depsLink: path.join(dir, 'node_modules') })
       if (fs.existsSync(dir)) out.skipped.push(dir)
       else out.removed.push(dir)
     } catch {
