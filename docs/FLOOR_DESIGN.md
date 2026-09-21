@@ -75,7 +75,7 @@ Three nouns, one loop:
 
 - Session state comes from what `claude agents --json` documents (`status`, `state`, `waitingFor`), read by `sessionActivity` in `shared/floor.ts`. Runs have exact states because the engine owns them; sessions do not. Where the CLI gives nothing usable the Floor falls back to recent hook activity and never to a blanket assumption (see §8).
 - Verification only exists for work that went through a Gate. Everything else is honestly labelled unverified.
-- The "Land" action still uses the earlier merge-agent path (a background Claude session with the Merge train brief). A Merge node in the engine is later work.
+- ~~The "Land" action still uses the earlier merge-agent path.~~ Out of date: **Land runs the engine's landing pipeline** (test the branch, merge in a scratch copy, test the merge, advance the base only if it did not move). No background "merge orchestrator" session is created any more. If one appears, the window is running an old build (see the build id in the window title).
 - Cost for ad-hoc sessions is token-based (from transcripts); only engine runs have exact dollars.
 
 ## 6. As built (2026-09-21)
