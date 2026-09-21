@@ -1,5 +1,5 @@
 import { useState, type JSX } from 'react'
-import { formatUsd, isActive, type NodeState, type RunStatus, type RunView } from '../../../shared/runs'
+import { formatUsd, isActive, isResumable, type NodeState, type RunStatus, type RunView } from '../../../shared/runs'
 import { formatAgo, formatTokens } from '../lib/crew'
 import { useNav } from '../nav'
 import { MiniFlow } from './MiniFlow'
@@ -36,6 +36,35 @@ export function SpendMeter({ spent, ceiling }: { spent: number; ceiling: number 
         {formatUsd(spent)} <span className="spend-of">/ {formatUsd(ceiling)}</span>
       </span>
     </div>
+  )
+}
+
+/** Continues an interrupted run from where it stopped. Shows why it could not, if so. */
+export function ResumeButton({ runId, className = 'btn btn-primary' }: { runId: string; className?: string }): JSX.Element {
+  const { resume } = useRuns()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  return (
+    <>
+      <button
+        type="button"
+        className={className}
+        disabled={busy}
+        title="Everything already spent and built is kept; the step that was in flight starts again."
+        onClick={() => {
+          setBusy(true)
+          setError('')
+          void resume(runId)
+            .then((r) => {
+              if (!r.ok) setError(r.error)
+            })
+            .finally(() => setBusy(false))
+        }}
+      >
+        {busy ? 'Resuming…' : 'Resume run'}
+      </button>
+      {error && <span className="rd-error" role="alert">{error}</span>}
+    </>
   )
 }
 
@@ -156,6 +185,7 @@ export function RunDetail({ run, onSelectNode, inEditor }: Props): JSX.Element {
       </ol>
 
       <div className="rd-actions">
+        {isResumable(run.status) && <ResumeButton runId={run.runId} />}
         {active && (
           <button type="button" className="btn rd-danger" onClick={() => void cancel(run.runId)}>
             Stop run

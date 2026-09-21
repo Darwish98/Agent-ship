@@ -93,8 +93,66 @@ export async function createWorktree(repo: string, root: string, name: string, b
 export async function createDetachedWorktree(repo: string, root: string, name: string, rev: string): Promise<Worktree> {
   const dir = path.join(root, name)
   fs.mkdirSync(root, { recursive: true })
+  // A resumed run reuses these deterministic scratch names; a killed app may have
+  // left the old directory behind. It only ever held a throwaway copy, so clear it.
+  if (fs.existsSync(dir)) {
+    await git(repo, ['worktree', 'remove', '--force', dir]).catch(() => undefined)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+  await git(repo, ['worktree', 'prune']).catch(() => undefined)
   await git(repo, ['worktree', 'add', '--detach', dir, rev], 60_000)
   return { path: dir, branch: '', detached: true, depsLink: linkDependencies(repo, dir) }
+}
+
+/** Checks an existing branch out into `wt.path` again (resuming a run whose
+ *  scratch directory was removed, or lost when the app was killed). */
+export async function attachWorktree(repo: string, wt: Worktree): Promise<void> {
+  // A hard kill leaves registrations for directories that no longer exist;
+  // git refuses to reuse the branch until they are pruned.
+  await git(repo, ['worktree', 'prune']).catch(() => undefined)
+  fs.mkdirSync(path.dirname(wt.path), { recursive: true })
+  await git(repo, ['worktree', 'add', wt.path, wt.branch], 60_000)
+}
+
+export interface SweepResult {
+  /** Directories whose work was committed to its branch and which were removed. */
+  removed: string[]
+  /** Directories a run may still resume in. */
+  kept: string[]
+  /** Not touched: not a git worktree, or its repository is gone. */
+  skipped: string[]
+}
+
+/**
+ * Removes scratch worktrees nothing will use again. A run that ends normally
+ * cleans up after itself; a killed app cannot, so its directories pile up. Any
+ * uncommitted work is committed to the worktree's branch first, so removing the
+ * directory never loses anything. Directories that are not recognisably a git
+ * worktree are left alone rather than deleted.
+ */
+export async function sweepWorktrees(root: string, keep: (dirName: string) => boolean): Promise<SweepResult> {
+  const out: SweepResult = { removed: [], kept: [], skipped: [] }
+  if (!fs.existsSync(root)) return out
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const dir = path.join(root, entry.name)
+    if (keep(entry.name)) {
+      out.kept.push(dir)
+      continue
+    }
+    try {
+      const common = path.resolve(dir, await git(dir, ['rev-parse', '--git-common-dir']))
+      if (path.basename(common) !== '.git') throw new Error('not a plain repository')
+      const repo = path.dirname(common)
+      await commitAll(dir, 'agentship: work recovered after the app closed unexpectedly').catch(() => false)
+      await removeWorktree(repo, { path: dir, branch: '' })
+      if (fs.existsSync(dir)) out.skipped.push(dir)
+      else out.removed.push(dir)
+    } catch {
+      out.skipped.push(dir)
+    }
+  }
+  return out
 }
 
 async function identityArgs(cwd: string): Promise<string[]> {

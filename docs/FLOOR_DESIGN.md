@@ -91,7 +91,9 @@ How it differs from the concept above:
 - **The lit stepper wraps** instead of scaling the graph, because a scaled canvas has unreadable labels at card size.
 - **The "orchestrator" card and drag-a-line links were removed.** Nothing consumed them.
 
-Not built, in priority order: an OS notification when something enters **Needs you**; keyboard triage (j/k/enter); search across projects; per-session cost for ad-hoc work; a "Land all verified" action; and replay of a finished run.
+Since built: an OS notification when a *run* enters **Needs you** (approval, failure, budget) while the window is unfocused, and a **Resume run** action on interrupted runs.
+
+Not built, in priority order: the same notification for ad-hoc sessions; keyboard triage (j/k/enter); search across projects; per-session cost for ad-hoc work; a "Land all verified" action; and replay of a finished run.
 
 Found during the build: only `busy`/`idle` (and `done` for background sessions) have been seen on real output. "Waiting for input" is implemented from the documented values (`state: blocked`, `status: waiting` + `waitingFor`) and covered by tests and a simulated end-to-end run, but has not been seen on a real session. Flow runs do not have this limit because the engine owns their state.
 

@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
 import path from 'node:path'
+import { foldRun, type RunEvent } from '../shared/runs'
 import {
   listRunningAgents,
   openSession,
@@ -9,7 +10,8 @@ import {
 } from './agents'
 import { ClaudeCodeAdapter } from './engine/adapter'
 import * as gitops from './engine/gitops'
-import { detectTestCommand, diffSummary, isClean, refExists, worktreeHolding } from './engine/gitops'
+import { detectTestCommand, diffSummary, isClean, refExists, sweepWorktrees, worktreeHolding } from './engine/gitops'
+import { resumableRunIds } from './engine/resume'
 import { buildLandBlueprint, LAND_FLOW } from '../shared/patterns'
 import { RunEngine, worktreeRootFor } from './engine/runner'
 import { RunStore } from './engine/store'
@@ -109,6 +111,31 @@ function createWindow(): void {
   } else {
     void mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+}
+
+/**
+ * An OS notification when a run enters "Needs you" (awaiting approval, failed,
+ * out of budget) while the window is not in front. A run that ends because the
+ * app is closing does not notify: the user just did that.
+ */
+function notifyIfNeeded(event: RunEvent): void {
+  if (process.env.AGENT_SHIP_SKIP_HOOKS || !Notification.isSupported()) return
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return
+  const troubled = event.type === 'run.finished' && (event.status === 'failed' || event.status === 'budget')
+  if (event.type !== 'gate.awaiting' && !troubled) return
+
+  const view = foldRun(runStore?.read(event.runId) ?? [])
+  const name = view ? `${view.blueprint.name} · ${view.projectName}` : 'A run'
+  const n = new Notification({
+    title: event.type === 'gate.awaiting' ? 'Approval needed' : 'A run needs you',
+    body: event.type === 'gate.awaiting' ? `${name}: ${event.instructions}`.slice(0, 200) : `${name}: ${event.reason}`.slice(0, 200)
+  })
+  n.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  })
+  n.show()
 }
 
 function registerIpcHandlers(): void {
@@ -322,6 +349,11 @@ function registerIpcHandlers(): void {
     }
   )
   ipcMain.handle('runs:cancel', (_evt, runId: string) => engine?.cancel(runId) ?? false)
+  // Only the run id crosses IPC; what resumes is the engine's own recorded log.
+  ipcMain.handle('runs:resume', async (_evt, runId: string) => {
+    if (!engine || !runStore) return { ok: false, error: 'The run engine is not ready.' }
+    return engine.resume(runStore.read(String(runId)))
+  })
   ipcMain.handle('runs:decide', (_evt, a: { runId: string; approve: boolean; note: string }) =>
     engine?.decide(a.runId, a.approve, String(a.note ?? '').slice(0, 2_000)) ?? false
   )
@@ -362,7 +394,8 @@ app.whenReady().then(() => {
   ensureHooksInstalled()
 
   runStore = new RunStore(path.join(userDataDir(), 'runs'))
-  // A run that was mid-flight when the app last closed can never finish.
+  // A run that was mid-flight when the app last closed can no longer proceed
+  // by itself; mark it so the user can resume it.
   runStore.markInterrupted()
   engine = new RunEngine({
     adapter: new ClaudeCodeAdapter(),
@@ -370,8 +403,18 @@ app.whenReady().then(() => {
     emit: (event) => {
       runStore?.append(event)
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('run-event', event)
+      notifyIfNeeded(event)
     }
   })
+
+  // A killed app cannot remove its scratch worktrees. Reclaim the ones no run
+  // can resume in (their work is committed to the branch first).
+  const resumable = resumableRunIds(runStore.list(200), Date.now())
+  void sweepWorktrees(worktreeRootFor(userDataDir()), (dir) => [...resumable].some((id) => dir.startsWith(`${id.slice(0, 8)}-`)))
+    .then((r) => {
+      if (r.removed.length || r.skipped.length) log.info('sweep', `removed ${r.removed.length} orphaned worktree(s), left ${r.skipped.length}`)
+    })
+    .catch((err: Error) => log.error('sweep', err.message))
 
   createWindow()
   registerIpcHandlers()
@@ -390,9 +433,14 @@ app.whenReady().then(() => {
   })
 })
 
-// Stop in-flight runs so their scratch worktrees are cleaned up rather than orphaned.
-app.on('before-quit', () => {
-  for (const id of engine?.activeRunIds() ?? []) engine?.cancel(id)
+// Suspend in-flight runs (they become "interrupted", resumable) and let them
+// commit their work and remove their scratch worktrees before the process exits.
+let suspended = false
+app.on('before-quit', (e) => {
+  if (suspended || !engine?.activeRunIds().length) return
+  e.preventDefault()
+  suspended = true
+  void engine.suspendAll().finally(() => app.quit())
 })
 
 app.on('window-all-closed', () => {

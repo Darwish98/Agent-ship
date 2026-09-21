@@ -193,6 +193,8 @@ const api = {
   ): Promise<StartRunResult> =>
     ipcRenderer.invoke('runs:land', { projectId, branch, baseBranch, testCommand, resolveConflicts }),
   cancelRun: (runId: string): Promise<boolean> => ipcRenderer.invoke('runs:cancel', runId),
+  /** Continue an interrupted run from where it stopped. */
+  resumeRun: (runId: string): Promise<StartRunResult> => ipcRenderer.invoke('runs:resume', runId),
   decideGate: (runId: string, approve: boolean, note: string): Promise<boolean> =>
     ipcRenderer.invoke('runs:decide', { runId, approve, note }),
   onRunEvent: (cb: (event: RunEvent) => void): (() => void) => {

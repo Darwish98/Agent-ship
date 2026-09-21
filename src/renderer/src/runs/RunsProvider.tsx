@@ -9,6 +9,7 @@ interface RunsApi {
   runFor: (projectId: string, slug: string) => RunView | undefined
   start: (projectId: string, slug: string, inputs: Record<string, string>) => Promise<StartRunResult>
   cancel: (runId: string) => Promise<void>
+  resume: (runId: string) => Promise<StartRunResult>
   decide: (runId: string, approve: boolean, note: string) => Promise<void>
   acknowledged: ReadonlySet<string>
   acknowledge: (runId: string) => void
@@ -87,6 +88,7 @@ export function RunsProvider({ children }: { children: ReactNode }): JSX.Element
       runFor,
       start: (p, s, i) => window.agentShip.startRun(p, s, i),
       cancel: async (id) => void (await window.agentShip.cancelRun(id)),
+      resume: (id) => window.agentShip.resumeRun(id),
       decide: async (id, approve, note) => void (await window.agentShip.decideGate(id, approve, note)),
       acknowledged: acked,
       acknowledge

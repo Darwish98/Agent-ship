@@ -3,7 +3,7 @@ import { pendingWork, type Verification, type WorkItem } from '../../../shared/f
 import { isActive } from '../../../shared/runs'
 import { AgentSprite } from '../components/AgentSprite'
 import { badgeFor, formatAgo, formatTokens, truncate } from '../lib/crew'
-import { SpendMeter } from '../runs/RunDetail'
+import { ResumeButton, SpendMeter } from '../runs/RunDetail'
 import { PipelineStrip } from './PipelineStrip'
 
 /** Everything a card can ask the Floor to do. Cards stay dumb; the Floor owns
@@ -103,6 +103,7 @@ export function RunCard(props: CardProps): JSX.Element {
         )}
         {(run.status === 'failed' || run.status === 'budget' || run.status === 'interrupted') && item.lane === 'needs' && (
           <>
+            {run.status === 'interrupted' && <ResumeButton runId={run.runId} className="btn btn-primary fc-btn" />}
             {run.flowSlug !== '__land__' && (
               <button type="button" className="btn fc-btn" onClick={() => actions.editFlow(item)}>
                 Edit flow

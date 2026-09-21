@@ -1323,3 +1323,10 @@ button.pl-stage {
 .ld-check {
   margin: 4px 0 12px;
 }
+
+.rd-error {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--low);
+}
