@@ -10,7 +10,10 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        include:
+          - { os: macos-latest, target: mac }
+          - { os: windows-latest, target: win }
+          - { os: ubuntu-latest, target: linux }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +21,8 @@ jobs:
         with:
           node-version: 20
       - run: npm install
-      - run: npm run dist -- --publish never
+      # There is no plain `dist` script; each platform has its own (dist:mac, dist:win, dist:linux).
+      - run: npm run dist:${{ matrix.target }} -- --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: agent-ship-${{ matrix.os }}

@@ -82,8 +82,14 @@ describe.skipIf(!live)('real claude CLI', () => {
 
   it('stops a run as "budget" when the real CLI reports its dollar cap was hit', async () => {
     const bp = flow()
-    // Above the engine's minimum step (/usr/bin/bash.02) but below one real build (~$0.026).
+    // Above the engine's minimum step ($0.02). A single cheap call can cost less than that
+    // (it did: $0.019), so the task needs several model calls to be sure to cross it.
     bp.defaultBudget = { maxUsd: 0.02 }
+    const build = bp.nodes.find((n) => n.id === 'build')!
+    if (build.kind === 'agent') {
+      build.config.tools = ['Read', 'Glob', 'Grep']
+      build.config.prompt = 'Do these one at a time, each as its own tool call: Read README.md, then Glob for "*", then Grep for "live" in the current directory, then Read README.md again. Then create hello.txt containing hi and reply done.'
+    }
     const events: RunEvent[] = []
     const engine = new RunEngine({ adapter: new ClaudeCodeAdapter(), worktreeRoot: path.join(root, 'wt2'), emit: (e) => events.push(e) })
     const started = await engine.start({ projectId: 'p', projectName: 'live', projectPath: repo, flowSlug: 'live', blueprint: bp, inputs: {} })
@@ -161,4 +167,52 @@ describe.skipIf(!live)('real claude CLI: landing with a merge conflict', () => {
     expect(merged).toMatch(/MAIN/)
     expect(git('rev-list', '--parents', '-n', '1', 'main').split(' ')).toHaveLength(3)
   }, 240_000)
+})
+
+describe.skipIf(!live)('real claude CLI: parallel tournament', () => {
+  it('runs copies in parallel in real branches, judges them with the real model, and keeps only the winner', async () => {
+    const bp = emptyBlueprint('Live tournament')
+    bp.inputs = []
+    bp.defaultBudget = { maxUsd: 0.12 }
+    bp.nodes.push(
+      { id: 'spread', kind: 'fanout', label: 'Spread', position: { x: 290, y: 0 }, config: { count: 2 } },
+      {
+        id: 'contender', kind: 'agent', label: 'Contender', position: { x: 580, y: 0 }, budget: { maxUsd: 0.12 },
+        config: {
+          role: 'Contender', model: 'haiku', worktree: true, access: 'edit', tools: [], outputSchema: '',
+          prompt: 'You are contender {{copy}} of {{copies}}. Using the Write tool, create a file named greeting.txt containing one short friendly greeting of your own. Then reply with the greeting only.'
+        }
+      },
+      {
+        id: 'check', kind: 'gate', label: 'File exists', position: { x: 870, y: 0 },
+        config: { check: 'command', command: 'node -e "process.exit(require(\'fs\').existsSync(\'greeting.txt\')?0:1)"', instructions: '' }
+      },
+      {
+        id: 'pick', kind: 'join', label: 'Judge', position: { x: 1160, y: 0 }, budget: { maxUsd: 0.12 },
+        config: { strategy: 'best', quorum: 2, criteria: 'The warmest greeting wins.' }
+      }
+    )
+    bp.edges.push(
+      { id: 'a', from: 'start', to: 'spread', type: 'control', condition: 'always' },
+      { id: 'b', from: 'spread', to: 'contender', type: 'artifact', condition: 'always' },
+      { id: 'c', from: 'contender', to: 'check', type: 'branch', condition: 'always' },
+      { id: 'd', from: 'check', to: 'pick', type: 'verdict', condition: 'pass' }
+    )
+    const events: RunEvent[] = []
+    const engine = new RunEngine({ adapter: new ClaudeCodeAdapter(), worktreeRoot: path.join(root, 'wt4'), emit: (e) => events.push(e) })
+    const started = await engine.start({ projectId: 'p', projectName: 'live', projectPath: repo, flowSlug: 'live', blueprint: bp, inputs: {} })
+    if (!started.ok) throw new Error(started.error)
+    await engine.whenDone(started.runId)
+
+    const v = foldRun(events)!
+    console.log(JSON.stringify({ status: v.status, reason: v.reason, spentUsd: v.spentUsd, ceiling: v.ceilingUsd, branch: v.branch, pick: v.nodes.pick.detail.slice(0, 300), branches: git('branch', '--list', 'agentship/*') }))
+    expect(v.status).toBe('passed')
+    expect(v.spentUsd).toBeLessThanOrEqual(v.ceilingUsd + 0.15) // the cap is checked after each call
+    expect(v.nodes.pick.detail).toMatch(/Picked copy [12] of 2/)
+    // Exactly the winner's branch survives, and it holds a real file the real model wrote.
+    // (Other live tests share this repo, so look only at this run's branches.)
+    expect(git('branch', '--list', `agentship/${started.runId.slice(0, 8)}-*`).split('\n').map((s) => s.trim()).filter(Boolean)).toEqual([v.branch])
+    expect(git('ls-tree', '-r', '--name-only', v.branch!)).toContain('greeting.txt')
+    expect(git('worktree', 'list').split('\n')).toHaveLength(1)
+  }, 300_000)
 })

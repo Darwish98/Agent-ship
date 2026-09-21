@@ -1,0 +1,29 @@
+name: Test
+
+on:
+  push:
+    branches: [main, New-platform]
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    # The engine has only ever been run on Windows by its author; Linux is here
+    # to find out what breaks, and does not block a merge until it is green.
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # git needs an identity for the tests that make commits.
+      - run: git config --global user.name ci && git config --global user.email ci@example.com
+      - run: npm install --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

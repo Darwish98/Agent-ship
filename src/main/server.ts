@@ -38,8 +38,25 @@ function normalize(body: Record<string, unknown>): AgentEvent {
   }
 }
 
+/**
+ * Only the hook bridge (a Node process on this machine) may talk to this
+ * server. A web page can also reach 127.0.0.1, so a browser tab could otherwise
+ * post fake agent events. Browsers always attach `Origin` to cross-site
+ * requests and the bridge never does; and `Host` must be the loopback name, so
+ * DNS rebinding (a hostile name resolving to 127.0.0.1) is refused too.
+ */
+export function isTrustedRequest(headers: http.IncomingHttpHeaders, port = PORT): boolean {
+  if (headers.origin !== undefined) return false
+  const host = (headers.host ?? '').toLowerCase()
+  return host === `127.0.0.1:${port}` || host === `localhost:${port}` || host === '127.0.0.1' || host === 'localhost'
+}
+
 export function startServer(onEvent: (event: AgentEvent) => void): http.Server {
   const server = http.createServer((req, res) => {
+    if (!isTrustedRequest(req.headers)) {
+      res.writeHead(403).end()
+      return
+    }
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: true }))
