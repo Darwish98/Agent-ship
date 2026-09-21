@@ -198,7 +198,7 @@ Each phase ends with something usable. Estimates are rough working-days for one 
 - ✅ Editor: library + pattern starters, palette (click or drag), drag-to-connect, inspector, Problems panel, undo/redo with edit coalescing, debounced autosave, error boundary.
 - ✅ Validation beyond the plan: cycles (gate-fail loops allowed only with a retry cap), fan-out without join, unreachable nodes, parallel agents sharing a working tree, undeclared prompt variables, and a **worst-case token ceiling** that reports "unbounded" when any agent has no limit.
 - ✅ Node kinds: Trigger(manual), Agent, Fan-out, Join, Gate(command | human), Merge.
-- ✅ Dogfooding, partly: "Brief the orchestrator" and "Collect & merge" now render their prompts from the shipped **Supervisor** and **Merge train** blueprints (`agents.ts` reads them; test asserts the rendered merge brief). The Floor's orchestrator card still exists and still launches via `claude --bg`, because removing it before an engine exists would delete working features.
+- ✅ Dogfooding, partly (historical; superseded in Phase 2/3): "Brief the orchestrator" and "Collect & merge" once rendered their prompts from the shipped **Supervisor** and **Merge train** blueprints and launched via `claude --bg`. Both are gone: Supervisor is a normal runnable flow, and Land is the engine's landing pipeline.
 - ⚠ "Delete the hard-coded orchestrator" was **not** done, on purpose. It moves to Phase 2, when a blueprint can actually run.
 - **Exit met:** build, save, reload, undo a flow. Nothing runs.
 

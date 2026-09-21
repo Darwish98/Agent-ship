@@ -31,6 +31,7 @@ let engine: RunEngine | null = null
 let runStore: RunStore | null = null
 
 app.setName('Agent Ship')
+const BUILD = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev'
 installCrashLogging()
 
 const gotLock = app.requestSingleInstanceLock()
@@ -89,7 +90,7 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#F5F4EE',
-    title: 'Agent Ship',
+    title: `Agent Ship (${BUILD})`,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -99,6 +100,8 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
+  // Keep the build id in the title; the page's own <title> would replace it.
+  mainWindow.on('page-title-updated', (e) => e.preventDefault())
 
   // Anything trying to open a new window goes to the real browser instead.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -391,6 +394,7 @@ function registerIpcHandlers(): void {
 }
 
 app.whenReady().then(() => {
+  log.info('start', `Agent Ship ${BUILD}`)
   ensureHooksInstalled()
 
   runStore = new RunStore(path.join(userDataDir(), 'runs'))
