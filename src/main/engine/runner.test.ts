@@ -269,9 +269,13 @@ describe('run engine', () => {
   it('rejects flows the engine cannot run, before spending anything', async () => {
     const fake = new Fake(() => ok())
     const { engine } = harness(fake)
-    const r = await engine.start(args(fromPattern(PATTERNS[3]))) // tournament: fan-out
+    // A tournament whose copies would wait on a human: parallel copies cannot.
+    const bp = fromPattern(PATTERNS[3])
+    const gate = bp.nodes.find((n) => n.id === 'tests')!
+    if (gate.kind === 'gate') gate.config = { check: 'human', command: '', instructions: 'look' }
+    const r = await engine.start(args(bp))
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.error).toMatch(/cannot execute fanout/)
+    if (!r.ok) expect(r.error).toMatch(/human gates/)
     expect(fake.reqs).toHaveLength(0)
   })
 

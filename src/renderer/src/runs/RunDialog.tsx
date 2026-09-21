@@ -66,6 +66,19 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
             <div className="rdlg-plan">
               <h4>This run will</h4>
               <ul>
+                {summary.parallel.map((p, i) => (
+                  <li key={`p${i}`}>
+                    <strong>{p.label}</strong>: runs <strong>{p.copies} copies</strong> of {p.steps.join(' → ') || 'its chain'} (at most 4 at a
+                    time, each in its own branch), then{' '}
+                    {p.strategy === 'best'
+                      ? 'a judge agent reads every passing branch and keeps the best; the other branches are deleted'
+                      : p.strategy === 'first'
+                        ? 'keeps the first to pass and stops the rest'
+                        : p.strategy === 'quorum'
+                          ? `continues once ${p.quorum} pass and stops the rest`
+                          : 'waits for all of them'}
+                  </li>
+                ))}
                 {summary.agents.map((a, i) => (
                   <li key={i}>
                     <strong>{a.label}</strong>: {a.edits ? 'can modify files' : 'read-only'}

@@ -13,7 +13,7 @@ export interface Problem {
 }
 
 /** Placeholders the engine fills in itself, in addition to declared inputs. */
-export const BUILTIN_VARS = ['upstream', 'item', 'branch', 'branches', 'baseBranch', 'conflicts'] as const
+export const BUILTIN_VARS = ['upstream', 'item', 'branch', 'branches', 'baseBranch', 'conflicts', 'copy', 'copies'] as const
 
 /** `{{name}}` or a reference into another node, `{{node-id.result}}`. */
 const VAR_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g
@@ -59,6 +59,44 @@ function reachableFrom(starts: string[], adj: Map<string, string[]>): Set<string
     for (const next of adj.get(id) ?? []) stack.push(next)
   }
   return seen
+}
+
+export type JoinNode = Extract<BlueprintNode, { kind: 'join' }>
+
+/**
+ * What runs once per copy between a Fan-out and its Join: every node reachable
+ * from the Fan-out (a gate's retry edge included, since a copy repairs itself)
+ * up to the Join. `escapes` is set when the walk comes back to the Fan-out
+ * itself, which would make the copies loop over the parallel section.
+ */
+export function parallelSection(
+  bp: Blueprint,
+  fanoutId: string
+): { body: BlueprintNode[]; join: JoinNode | undefined; escapes: boolean } {
+  const out = new Map<string, string[]>(bp.nodes.map((n) => [n.id, []]))
+  for (const e of bp.edges) out.get(e.from)?.push(e.to)
+  const byId = new Map(bp.nodes.map((n) => [n.id, n]))
+  const body = new Map<string, BlueprintNode>()
+  let join: JoinNode | undefined
+  let escapes = false
+  const stack = [...(out.get(fanoutId) ?? [])]
+  while (stack.length) {
+    const id = stack.pop()!
+    const node = byId.get(id)
+    if (!node) continue
+    if (id === fanoutId) {
+      escapes = true
+      continue
+    }
+    if (node.kind === 'join') {
+      join ??= node
+      continue
+    }
+    if (body.has(id)) continue
+    body.set(id, node)
+    stack.push(...(out.get(id) ?? []))
+  }
+  return { body: [...body.values()], join, escapes }
 }
 
 function hasCycle(bp: Blueprint): string | null {
@@ -294,7 +332,8 @@ function ceiling(bp: Blueprint, capOf: (n: BlueprintNode) => number | undefined)
   let total = 0
   for (const n of bp.nodes) {
     // A merge step that may call an agent to resolve conflicts spends like one.
-    const spends = n.kind === 'agent' || (n.kind === 'merge' && n.config.resolveConflicts)
+    // A "best" join calls a judge agent; that spends like any other agent.
+    const spends = n.kind === 'agent' || (n.kind === 'merge' && n.config.resolveConflicts) || (n.kind === 'join' && n.config.strategy === 'best')
     if (!spends) continue
     const cap = capOf(n)
     if (!cap) return null
@@ -325,14 +364,45 @@ export function usdCeiling(bp: Blueprint): number | null {
  * are deliberately separate: a flow may be valid to draw before it is
  * runnable. Empty means runnable.
  */
+/** What the engine can run in parallel: one chain of agents and command gates
+ *  between a Fan-out and its Join, with no nesting. Anything else is refused up
+ *  front rather than half-run. */
+function parallelReasons(bp: Blueprint): string[] {
+  const reasons: string[] = []
+  const claimed = new Map<string, string>() // join id -> the fan-out that owns it
+  for (const f of bp.nodes) {
+    if (f.kind !== 'fanout') continue
+    const { body, join, escapes } = parallelSection(bp, f.id)
+    const outs = bp.edges.filter((e) => e.from === f.id)
+    if (outs.length !== 1) reasons.push(`Fan-out "${nameOf(f)}" must connect to exactly one node (the one that is copied); it has ${outs.length}.`)
+    if (escapes) reasons.push(`Fan-out "${nameOf(f)}" is reached again from inside its own parallel section.`)
+    if (!join) continue
+    if (claimed.has(join.id)) reasons.push(`Join "${nameOf(join)}" is shared by two Fan-outs; each needs its own.`)
+    claimed.set(join.id, f.id)
+    if (bp.edges.filter((e) => e.to === join.id).length !== 1) {
+      reasons.push(`Join "${nameOf(join)}" must have exactly one incoming edge, from the end of the copied chain.`)
+    }
+    if (join.config.strategy === 'quorum' && join.config.quorum > f.config.count) {
+      reasons.push(`Join "${nameOf(join)}" wants ${join.config.quorum} finishing, but there are only ${f.config.count} copies.`)
+    }
+    for (const n of body) {
+      const ok = n.kind === 'agent' || (n.kind === 'gate' && n.config.check === 'command')
+      if (!ok) {
+        reasons.push(`"${nameOf(n)}" is inside a parallel section, where only agents and command gates can run (no ${n.kind === 'gate' ? 'human gates' : `${n.kind} nodes`}, no nesting).`)
+      }
+    }
+  }
+  for (const j of bp.nodes) {
+    if (j.kind === 'join' && !claimed.has(j.id)) reasons.push(`Join "${nameOf(j)}" has no Fan-out feeding it.`)
+  }
+  return reasons
+}
+
 export function unrunnableReasons(bp: Blueprint): string[] {
   const reasons: string[] = []
   if (hasErrors(validateBlueprint(bp))) reasons.push('Fix the errors in the Problems panel first.')
 
-  const unsupported = new Set(bp.nodes.filter((n) => n.kind === 'fanout' || n.kind === 'join').map((n) => n.kind))
-  for (const kind of unsupported) {
-    reasons.push(`The run engine cannot execute ${kind} nodes yet (parallel steps are the next phase).`)
-  }
+  reasons.push(...parallelReasons(bp))
 
   // A run is a walk along a chain: each node continues to at most one next
   // node, apart from a gate's separate pass and fail edges.
@@ -408,7 +478,7 @@ export function makeNode(kind: NodeKind, id: string, position: { x: number; y: n
     case 'fanout':
       return { ...base, kind, label: 'Fan-out', config: { count: 3 } }
     case 'join':
-      return { ...base, kind, label: 'Join', config: { strategy: 'all', quorum: 2 } }
+      return { ...base, kind, label: 'Join', config: { strategy: 'all', quorum: 2, criteria: '' } }
     case 'gate':
       return {
         ...base,
@@ -461,6 +531,8 @@ export function flowLevels(bp: Blueprint): BlueprintNode[][] {
 }
 
 export interface RunSummary {
+  /** Each Fan-out: how many copies, what each copy runs, and how the Join chooses. */
+  parallel: { label: string; copies: number; steps: string[]; strategy: string; quorum: number; judge: boolean }[]
   merges: { label: string; base: string; agentOnConflict: boolean }[]
   lands: { label: string; base: string }[]
   agents: { label: string; model: string; edits: boolean; ownBranch: boolean; tools: string[] }[]
@@ -472,7 +544,7 @@ export interface RunSummary {
 /** What pressing Run would actually do, in plain terms. A blueprint is code
  *  that spends money and changes repos, so this is shown before it starts. */
 export function summarizeRun(bp: Blueprint): RunSummary {
-  const summary: RunSummary = { merges: [], lands: [], agents: [], commands: [], humanGates: [], ceilingUsd: usdCeiling(bp) }
+  const summary: RunSummary = { parallel: [], merges: [], lands: [], agents: [], commands: [], humanGates: [], ceilingUsd: usdCeiling(bp) }
   for (const n of bp.nodes) {
     if (n.kind === 'agent') {
       summary.agents.push({
@@ -481,6 +553,16 @@ export function summarizeRun(bp: Blueprint): RunSummary {
         edits: n.config.access === 'edit',
         ownBranch: n.config.worktree,
         tools: n.config.tools
+      })
+    } else if (n.kind === 'fanout') {
+      const { body, join } = parallelSection(bp, n.id)
+      summary.parallel.push({
+        label: n.label || 'Fan-out',
+        copies: n.config.count,
+        steps: body.map(nameOf),
+        strategy: join?.config.strategy ?? 'all',
+        quorum: join?.config.quorum ?? 0,
+        judge: join?.config.strategy === 'best'
       })
     } else if (n.kind === 'merge') {
       summary.merges.push({ label: n.label || 'Merge', base: n.config.baseBranch, agentOnConflict: n.config.resolveConflicts })

@@ -3,6 +3,7 @@ import {
   budgetCeiling,
   flowLevels,
   hasErrors,
+  parallelSection,
   renderTemplate,
   summarizeRun,
   templateVars,
@@ -144,8 +145,11 @@ describe('budget ceiling', () => {
   })
 
   it('multiplies fan-out interiors', () => {
-    // 3 contenders x 300k, plus the Merge step's conflict resolver (300k, runs once).
-    expect(budgetCeiling(fromPattern(PATTERNS[3]))).toBe(900_000 + 300_000)
+    // 3 contenders x 300k, each allowed one gate retry (x2), plus the judge and
+    // the Merge step's conflict resolver (300k each, run once).
+    expect(budgetCeiling(fromPattern(PATTERNS[3]))).toBe(3 * 300_000 * 2 + 300_000 + 300_000)
+    // Dollars: 3 x $0.5 x 2, the $0.3 judge, and the resolver's default $1.
+    expect(usdCeiling(fromPattern(PATTERNS[3]))).toBeCloseTo(3 + 0.3 + 1)
   })
 
   it('multiplies a gate retry loop over the loop body only', () => {
@@ -212,10 +216,52 @@ describe('run planning helpers', () => {
     expect(s.ceilingUsd).toBeCloseTo(0.5 + 1 * 4 + 0.5)
   })
 
-  it('ships runnable patterns and marks the parallel one as not runnable yet', () => {
+  it('ships runnable patterns, including the parallel tournament', () => {
     expect(unrunnableReasons(fromPattern(PATTERNS[0]))).toEqual([])
     expect(unrunnableReasons(fromPattern(PATTERNS[2]))).toEqual([])
-    expect(unrunnableReasons(fromPattern(PATTERNS[3])).join(' ')).toMatch(/fanout/)
+    expect(unrunnableReasons(fromPattern(PATTERNS[3]))).toEqual([])
+  })
+
+  describe('parallel sections', () => {
+    const tournament = (): Blueprint => fromPattern(PATTERNS[3])
+    const why = (bp: Blueprint): string => unrunnableReasons(bp).join(' | ')
+
+    it('finds what runs once per copy, including the gate that repairs it', () => {
+      const s = parallelSection(tournament(), 'spread')
+      expect(s.body.map((n) => n.id).sort()).toEqual(['contender', 'tests'])
+      expect(s.join?.id).toBe('pick')
+      expect(s.escapes).toBe(false)
+    })
+
+    it('refuses a human gate inside the copies', () => {
+      const bp = tournament()
+      const gate = bp.nodes.find((n) => n.id === 'tests')!
+      if (gate.kind === 'gate') gate.config = { check: 'human', command: '', instructions: 'look' }
+      expect(why(bp)).toMatch(/human gates/)
+    })
+
+    it('refuses nesting, and a merge inside the copies', () => {
+      const nested = tournament()
+      nested.nodes.push({ id: 'inner', kind: 'fanout', label: 'Inner', position: { x: 0, y: 0 }, config: { count: 2 } })
+      nested.edges = nested.edges.filter((e) => e.id !== 'contender->tests')
+      nested.edges.push({ id: 'contender->inner', from: 'contender', to: 'inner', type: 'artifact', condition: 'always' }, { id: 'inner->tests', from: 'inner', to: 'tests', type: 'artifact', condition: 'always' })
+      expect(why(nested)).toMatch(/no nesting/)
+    })
+
+    it('refuses a Join that nothing feeds, a shared Join, a quorum larger than the copies, and a fan-out with two branches', () => {
+      const orphan = tournament()
+      orphan.nodes.push({ id: 'j2', kind: 'join', label: 'Lonely', position: { x: 0, y: 0 }, config: { strategy: 'all', quorum: 2, criteria: '' } })
+      expect(why(orphan)).toMatch(/no Fan-out feeding it/)
+
+      const quorum = tournament()
+      const pick = quorum.nodes.find((n) => n.id === 'pick')!
+      if (pick.kind === 'join') pick.config = { strategy: 'quorum', quorum: 5, criteria: '' }
+      expect(why(quorum)).toMatch(/wants 5 finishing, but there are only 3 copies/)
+
+      const two = tournament()
+      two.edges.push({ id: 'spread->pick', from: 'spread', to: 'pick', type: 'artifact', condition: 'always' })
+      expect(why(two)).toMatch(/exactly one node/)
+    })
   })
 
   it('refuses to run a flow with no dollar ceiling', () => {

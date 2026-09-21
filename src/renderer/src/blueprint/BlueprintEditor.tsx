@@ -38,8 +38,6 @@ const SAVE_LABEL = {
   conflict: 'Changed on disk'
 } as const
 
-/** Parallel steps can be drawn but the engine cannot run them yet. */
-const DESIGN_ONLY = new Set<NodeKind>(['fanout', 'join'])
 
 function edgeType(from: BlueprintNode, taken: BlueprintEdge[]): Pick<BlueprintEdge, 'type' | 'condition'> {
   if (from.kind === 'trigger') return { type: 'control', condition: 'always' }
@@ -480,10 +478,7 @@ export function BlueprintEditor({ active }: { active: boolean }): JSX.Element {
               onClick={() => addNode(k.kind)}
               title="Click to add, or drag onto the canvas"
             >
-              <strong>
-                {k.title}
-                {DESIGN_ONLY.has(k.kind) && <em className="bp-tag" title="You can draw this, but the run engine cannot execute it yet.">design only</em>}
-              </strong>
+              <strong>{k.title}</strong>
               <span>{k.blurb}</span>
             </button>
           ))}

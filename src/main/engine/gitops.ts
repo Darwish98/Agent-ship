@@ -379,6 +379,15 @@ export async function diffSummary(
   return { files, added, removed }
 }
 
+/** What `branch` changed relative to `base`, as a stat plus the patch, cut to `max`
+ *  characters. For a judge that has to compare attempts without checking them out. */
+export async function diffText(repo: string, base: string, branch: string, max = 12_000): Promise<string> {
+  const stat = await git(repo, ['diff', '--stat', `${base}...${branch}`]).catch(() => '')
+  const patch = await git(repo, ['diff', '--no-color', `${base}...${branch}`]).catch(() => '')
+  const body = patch.length > max ? `${patch.slice(0, max)}\n…(patch truncated)` : patch
+  return stat ? `${stat}\n\n${body}` : body
+}
+
 /** A sensible default test command for a project, or '' when there is none to guess. */
 export function detectTestCommand(repo: string): { command: string; source: string } {
   const has = (f: string): boolean => fs.existsSync(path.join(repo, f))

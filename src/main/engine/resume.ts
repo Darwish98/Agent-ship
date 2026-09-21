@@ -36,6 +36,9 @@ export interface Seed {
   cwd: string
   upstream: string
   feedback: string
+  /** Working copies and branches that copies of an unfinished parallel section
+   *  made. The section runs again from its start, so resuming clears these first. */
+  abandoned: { path: string; branch: string }[]
 }
 
 export const freshSeed = (bp: Blueprint, projectPath: string): Seed => ({
@@ -49,7 +52,8 @@ export const freshSeed = (bp: Blueprint, projectPath: string): Seed => ({
   branch: undefined,
   cwd: projectPath,
   upstream: '',
-  feedback: ''
+  feedback: '',
+  abandoned: []
 })
 
 type Last =
@@ -76,25 +80,55 @@ export function planResume(events: readonly RunEvent[], bp: Blueprint, projectPa
   // and nothing reaches the base branch before Land, so a run that got past the
   // Merge step goes back to it rather than continuing from a copy that is gone.
   let merged: BlueprintNode | undefined
+  // A parallel section that has begun and whose Join has not passed. Its copies
+  // ran in scratch directories that do not survive a restart and finished in an
+  // order nobody recorded as a whole, so a run interrupted inside one runs the
+  // whole section again (from its Fan-out) rather than guessing which copies to keep.
+  let section: BlueprintNode | undefined
+  let copyTrees: { path: string; branch: string }[] = []
 
   for (const e of events) {
     const node = 'nodeId' in e ? byId.get(e.nodeId) : undefined
     if (!node) continue
+    // Steps a parallel copy ran are only counted (money, attempt numbers); what
+    // they leave behind is decided by the Join.
+    const inCopy = e.type === 'node.started' ? e.copy !== undefined : 'attempt' in e && started.get(`${e.nodeId}#${e.attempt}`)?.copy !== undefined
 
     if (e.type === 'node.started') {
       started.set(`${e.nodeId}#${e.attempt}`, e)
+      seed.runs.set(e.nodeId, Math.max(seed.runs.get(e.nodeId) ?? 0, e.attempt))
+      if (inCopy) {
+        if (node.kind === 'agent' && node.config.worktree && e.branch) copyTrees.push({ path: e.cwd, branch: e.branch })
+        continue
+      }
       seed.executions++
       if (node.kind === 'merge') merged = node
-      seed.runs.set(e.nodeId, Math.max(seed.runs.get(e.nodeId) ?? 0, e.attempt))
+      if (node.kind === 'fanout') section = node
       // Only a node that owns a worktree may claim its directory; a reviewer
       // that merely works inside the builder's has the same cwd and branch.
       if (node.kind === 'agent' && node.config.worktree && e.branch) seed.worktrees.set(e.nodeId, { path: e.cwd, branch: e.branch })
       last = { kind: 'started', node }
     } else if (e.type === 'gate.awaiting') {
-      last = { kind: 'started', node }
+      if (!inCopy) last = { kind: 'started', node }
     } else if (e.type === 'node.finished') {
       const s = started.get(`${e.nodeId}#${e.attempt}`)
       seed.spent += e.costUsd
+      if (inCopy || node.kind === 'fanout') continue
+      if (node.kind === 'join') {
+        if (e.status === 'passed') {
+          section = undefined
+          copyTrees = []
+          seed.upstream = e.summary
+          // The winner's working copy is where the flow continues.
+          if (e.branch && e.cwd) {
+            seed.branch = e.branch
+            seed.cwd = e.cwd
+            seed.worktrees.set(node.id, { path: e.cwd, branch: e.branch })
+          }
+          last = { kind: 'agent', node, passed: true }
+        }
+        continue
+      }
       if (s?.sessionId && e.status === 'passed') seed.sessions.set(e.nodeId, { id: s.sessionId, cwd: s.cwd })
       if (e.branch && s) {
         seed.branch = e.branch
@@ -106,6 +140,7 @@ export function planResume(events: readonly RunEvent[], bp: Blueprint, projectPa
       }
       last = { kind: 'agent', node, passed: e.status === 'passed' }
     } else if (e.type === 'gate.result') {
+      if (inCopy) continue
       if (!e.pass) seed.fails.set(e.nodeId, (seed.fails.get(e.nodeId) ?? 0) + 1)
       seed.feedback = e.pass ? '' : tail(e.detail)
       last = { kind: 'gate', node, pass: e.pass }
@@ -140,6 +175,10 @@ export function planResume(events: readonly RunEvent[], bp: Blueprint, projectPa
     }
   }
   if (merged && seed.node && seed.node.id !== merged.id) seed.node = merged
+  if (section) {
+    seed.node = section
+    seed.abandoned = copyTrees
+  }
   return seed
 }
 

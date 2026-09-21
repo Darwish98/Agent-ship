@@ -10,11 +10,11 @@ import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { renderTemplate, unrunnableReasons, usdCeiling } from '../../shared/blueprint'
+import { parallelSection, renderTemplate, unrunnableReasons, usdCeiling } from '../../shared/blueprint'
 import { RESOLVER_PROMPT } from '../../shared/patterns'
-import { foldRun, isResumable, promptVars, type RunEvent } from '../../shared/runs'
-import type { Blueprint } from '../../shared/schema'
-import { killTree, type AgentAdapter } from './adapter'
+import { foldRun, isResumable, promptVars, type NodeRun, type RunEvent, type RunView } from '../../shared/runs'
+import type { Blueprint, BlueprintNode } from '../../shared/schema'
+import { killTree, type AgentAdapter, type StepResult } from './adapter'
 import * as git from './gitops'
 import { freshSeed, nextNode, planResume, type Seed } from './resume'
 
@@ -44,9 +44,46 @@ const MAX_NODE_EXECUTIONS = 60
 const DEFAULT_AGENT_MINUTES = 30
 const DEFAULT_GATE_MINUTES = 10
 const OUTPUT_CAP = 4_000
+/** How many parallel copies run at once. More may be declared; they queue. */
+const MAX_PARALLEL = 4
+const JUDGE_SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: { winner: { type: 'integer' }, reason: { type: 'string' } },
+  required: ['winner', 'reason']
+})
 
 const clip = (s: string, n = OUTPUT_CAP): string => (s.length > n ? `${s.slice(0, n)}\n…(truncated)` : s)
 const tail = (s: string, n = 6_000): string => (s.length > n ? `…(truncated)\n${s.slice(-n)}` : s)
+
+/** The state one walker carries: the run itself, or one parallel copy of it. */
+interface Ctx {
+  cwd: string
+  branch: string | undefined
+  upstream: string
+  feedback: string
+  /** The last finished session of each agent, for repair-by-resume. */
+  sessions: Map<string, { id: string; cwd: string }>
+  /** Scratch directories this walker made, by the node that owns each. */
+  worktrees: Map<string, git.Worktree>
+  fails: Map<string, number>
+  signal: AbortSignal
+  executions: number
+  /** Dollars this walker's own steps have spent (a judge's cheapest-copy fallback). */
+  cost: number
+  /** Set inside a parallel copy (1-based). */
+  copy?: { index: number; total: number }
+  /** What this copy's nodes returned, shadowing the run-wide results in prompts. */
+  local?: Record<string, NodeRun>
+}
+
+/** Why a walker ended early. `superseded`: a sibling already decided the join. */
+interface Stop {
+  status: Finish
+  reason: string
+  superseded?: boolean
+}
+
+type Step = { stop: Stop } | { next: BlueprintNode | undefined }
 
 interface Live {
   abort: AbortController
@@ -164,6 +201,13 @@ export class RunEngine {
 
     const seed = planResume(events, view.blueprint, view.projectPath)
 
+    // An unfinished parallel section runs again from its start, so its copies'
+    // leftovers (directories a kill left behind, and their branches) go first.
+    for (const t of seed.abandoned) {
+      if (fs.existsSync(t.path)) await git.removeWorktree(view.projectPath, { path: t.path, branch: t.branch, depsLink: path.join(t.path, 'node_modules') })
+      if (t.branch.startsWith('agentship/')) await git.deleteBranch(view.projectPath, t.branch)
+    }
+
     // Bring back any scratch directory that is gone (a graceful close removes
     // them after committing; a kill may have left them half-registered).
     for (const wt of seed.worktrees.values()) {
@@ -214,32 +258,460 @@ export class RunEngine {
     const ceilingUsd = usdCeiling(bp) ?? 0
 
     const short = runId.slice(0, 8)
-    const worktrees = new Map<string, git.Worktree>(seed.worktrees)
-    const sessions = new Map(seed.sessions)
-    const fails = new Map(seed.fails)
+    /** Attempts are counted per node across every parallel copy, so (node, attempt) names one step. */
     const runs = new Map(seed.runs)
+    const nextAttempt = (id: string): number => {
+      const n = (runs.get(id) ?? 0) + 1
+      runs.set(id, n)
+      return n
+    }
 
-    let cwd = seed.cwd
-    let branch = seed.branch
-    let upstream = seed.upstream
-    let feedback = seed.feedback
+    // Money. `reserved` is what steps still in flight may yet spend, so parallel
+    // copies are never each promised the same remaining dollars.
     let spent = seed.spent
-    let executions = seed.executions
+    let reserved = 0
+    const remainingUsd = (): number => ceilingUsd - spent - reserved
+
+    /** The state one walker (the run itself, or one parallel copy) carries. */
+    const main: Ctx = {
+      cwd: seed.cwd,
+      branch: seed.branch,
+      upstream: seed.upstream,
+      feedback: seed.feedback,
+      sessions: new Map(seed.sessions),
+      worktrees: new Map<string, git.Worktree>(seed.worktrees),
+      fails: new Map(seed.fails),
+      signal: live.abort.signal,
+      executions: seed.executions,
+      cost: 0
+    }
     // Set by the Merge step: the scratch copy holding the merged result, and
     // what the base branch pointed at when it was made (so Land can tell if it moved).
     let integ: { wt: git.Worktree; baseTip: string; sha: string; base: string } | null = null
 
     const finish = (status: Finish, reason: string): void => {
-      emit({ type: 'run.finished', at: this.now(), runId, status, reason, branch })
+      emit({ type: 'run.finished', at: this.now(), runId, status, reason, branch: main.branch })
     }
 
+    /** Why a walker's signal fired: the user or the app closing (the whole run
+     *  ends), or a sibling copy that already decided the join (only this copy ends). */
+    const stopOf = (c: Ctx): Stop => {
+      if (!live.abort.signal.aborted) return { status: 'cancelled', reason: 'Another copy already decided the join.', superseded: true }
+      return live.suspend
+        ? { status: 'interrupted', reason: 'Agent Ship closed while this run was in progress. Resume it to continue from where it stopped.' }
+        : { status: 'cancelled', reason: 'Stopped by you.' }
+    }
     /** The run ended because the user stopped it, or because the app is closing. */
-    const stopped = (): void =>
-      live.suspend
-        ? finish('interrupted', 'Agent Ship closed while this run was in progress. Resume it to continue from where it stopped.')
-        : finish('cancelled', 'Stopped by you.')
+    const stopped = (): void => {
+      const s = stopOf(main)
+      finish(s.status, s.reason)
+    }
 
     const outEdge = (n: NonNullable<Seed['node']>, when: 'pass' | 'fail' | 'next') => nextNode(bp, n, when)
+
+    /** Prompts see this copy's own results for the nodes it has run, not whichever copy finished last. */
+    const viewFor = (c: Ctx): Pick<RunView, 'inputs' | 'nodes' | 'blueprint'> => {
+      const v = view()
+      return c.local ? { inputs: v.inputs, blueprint: v.blueprint, nodes: { ...v.nodes, ...c.local } } : v
+    }
+    const copyFields = (c: Ctx): { copy?: number; copies?: number } => (c.copy ? { copy: c.copy.index, copies: c.copy.total } : {})
+
+    // --- one agent step -----------------------------------------------------------
+    const agentStep = async (c: Ctx, node: Extract<BlueprintNode, { kind: 'agent' }>, attempt: number): Promise<Step> => {
+      const remaining = remainingUsd()
+      if (remaining < MIN_STEP_USD) {
+        return { stop: { status: 'budget', reason: `The run's spending ceiling ($${ceilingUsd < 1 ? ceilingUsd.toFixed(3) : ceilingUsd.toFixed(2)}) is used up.` } }
+      }
+
+      const prior = c.sessions.get(node.id)
+      let stepCwd = c.cwd
+      let stepBranch = c.branch
+      if (node.config.worktree) {
+        let wt = c.worktrees.get(node.id)
+        if (!wt) {
+          // Each parallel copy needs its own branch; the attempt number is unique per node.
+          const name = c.copy ? `${short}-${git.safeName(node.id)}-c${c.copy.index}-a${attempt}` : `${short}-${git.safeName(node.id)}`
+          wt = await git.createWorktree(a.projectPath, this.deps.worktreeRoot, name, c.branch ?? 'HEAD')
+          c.worktrees.set(node.id, wt)
+        }
+        stepCwd = wt.path
+        stepBranch = wt.branch
+      }
+      if (prior) stepCwd = prior.cwd
+
+      const sessionId = prior?.id ?? crypto.randomUUID()
+      const resume = Boolean(prior)
+      const extra: Record<string, string> = { branch: stepBranch ?? '' }
+      if (c.copy) Object.assign(extra, { copy: String(c.copy.index), copies: String(c.copy.total) })
+      const vars = promptVars(viewFor(c), c.upstream, extra)
+      const base = renderTemplate(node.config.prompt, vars)
+      const prompt = resume
+        ? `The check after your last change failed. Fix the problems, then reply with a short summary.\n\n${c.feedback}`
+        : c.feedback
+          ? `${base}\n\nA previous check failed:\n${c.feedback}`
+          : base
+      c.feedback = ''
+
+      const capUsd = Math.min(node.budget?.maxUsd ?? bp.defaultBudget.maxUsd ?? remaining, remaining)
+      emit({ type: 'node.started', at: this.now(), runId, nodeId: node.id, attempt, cwd: stepCwd, branch: stepBranch, sessionId, ...copyFields(c) })
+
+      reserved += capUsd
+      let res: StepResult
+      try {
+        res = await this.deps.adapter.run({
+          prompt,
+          cwd: stepCwd,
+          sessionId,
+          resume,
+          model: node.config.model,
+          access: node.config.access,
+          tools: node.config.tools,
+          maxUsd: capUsd,
+          jsonSchema: node.config.outputSchema,
+          env: {
+            AGENT_SHIP_NAME: node.label || node.config.role,
+            AGENT_SHIP_ROLE: node.config.role,
+            AGENT_SHIP_TASK: `${bp.name}: ${node.label || node.config.role}${c.copy ? ` (copy ${c.copy.index}/${c.copy.total})` : ''}`
+          },
+          timeoutMs: (node.budget?.maxMinutes ?? DEFAULT_AGENT_MINUTES) * 60_000,
+          signal: c.signal
+        })
+      } finally {
+        reserved -= capUsd
+      }
+
+      spent += res.costUsd
+      c.cost += res.costUsd
+      // A killed or failed step may have left no resumable session behind.
+      if (res.ok) c.sessions.set(node.id, { id: res.sessionId, cwd: stepCwd })
+
+      // Whatever the agent left becomes commits on its branch, so the
+      // work survives the worktree being removed.
+      if (node.config.worktree && stepBranch) {
+        try {
+          await git.commitAll(stepCwd, `agentship: ${node.label || node.config.role} (${bp.name})`)
+        } catch (err) {
+          res.ok = false
+          res.error = `Could not commit the agent's work: ${(err as Error).message}`
+        }
+      }
+
+      const overTokens = node.budget?.maxTokens ?? bp.defaultBudget.maxTokens
+      const tokenBust = Boolean(overTokens && res.tokens > overTokens)
+      const passed = res.ok && !tokenBust
+      const summary = clip(res.structured !== undefined ? JSON.stringify(res.structured) : res.result)
+      const error = passed ? undefined : tokenBust ? `Used ${res.tokens.toLocaleString()} tokens; the limit was ${overTokens!.toLocaleString()}.` : (res.error ?? 'Failed.')
+
+      emit({
+        type: 'node.finished',
+        at: this.now(),
+        runId,
+        nodeId: node.id,
+        attempt,
+        status: passed ? 'passed' : 'failed',
+        costUsd: res.costUsd,
+        tokens: res.tokens,
+        summary,
+        error,
+        branch: stepBranch
+      })
+      if (c.local) {
+        const before = c.local[node.id]
+        c.local[node.id] = {
+          state: passed ? 'passed' : 'failed',
+          attempts: attempt,
+          costUsd: (before?.costUsd ?? 0) + res.costUsd,
+          tokens: (before?.tokens ?? 0) + res.tokens,
+          detail: error ?? summary,
+          branch: stepBranch,
+          sessionId
+        }
+      }
+
+      if (stepBranch) {
+        c.branch = stepBranch
+        c.cwd = stepCwd
+      }
+      const label = node.label || node.config.role
+      if (res.cancelled) return { stop: stopOf(c) }
+      if (res.budgetExhausted) return { stop: { status: 'budget', reason: `"${label}" hit its dollar limit.` } }
+      if (tokenBust) return { stop: { status: 'budget', reason: `"${label}" exceeded its token limit.` } }
+      if (!res.ok) return { stop: { status: 'failed', reason: `"${label}" failed: ${res.error ?? 'unknown error'}` } }
+
+      c.upstream = summary
+      return { next: outEdge(node, 'next') }
+    }
+
+    // --- one gate ---------------------------------------------------------------
+    const gateStep = async (c: Ctx, node: Extract<BlueprintNode, { kind: 'gate' }>, attempt: number): Promise<Step> => {
+      emit({ type: 'node.started', at: this.now(), runId, nodeId: node.id, attempt, cwd: c.cwd, ...copyFields(c) })
+      let pass = false
+      let detail = ''
+      let by: 'command' | 'human' = 'command'
+
+      if (node.config.check === 'human') {
+        by = 'human'
+        emit({ type: 'gate.awaiting', at: this.now(), runId, nodeId: node.id, attempt, instructions: node.config.instructions || 'Approve to continue.' })
+        const decision = await new Promise<{ approve: boolean; note: string }>((resolve) => {
+          live.decide = resolve
+          live.abort.signal.addEventListener('abort', () => resolve({ approve: false, note: 'Run cancelled.' }), { once: true })
+        })
+        live.decide = undefined
+        pass = decision.approve
+        detail = decision.note || (pass ? 'Approved.' : 'Rejected.')
+      } else {
+        const out = await runCommand(node.config.command, c.cwd, (node.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000, c.signal)
+        pass = out.code === 0
+        detail = out.timedOut ? `Timed out.\n${out.tail}` : `exit ${out.code}\n${out.tail}`
+      }
+
+      emit({ type: 'gate.result', at: this.now(), runId, nodeId: node.id, attempt, pass, by, detail: clip(detail, 6_000) })
+      if (c.signal.aborted) return { stop: stopOf(c) }
+
+      if (pass) return { next: outEdge(node, 'pass') }
+
+      const failCount = (c.fails.get(node.id) ?? 0) + 1
+      c.fails.set(node.id, failCount)
+      const repair = outEdge(node, 'fail')
+      const maxRetries = node.budget?.maxRetries ?? 0
+      if (!repair) return { stop: { status: 'failed', reason: `Gate "${node.label || 'gate'}" failed.` } }
+      if (failCount > maxRetries) {
+        return { stop: { status: 'failed', reason: `Gate "${node.label || 'gate'}" still failing after ${failCount} attempt${failCount === 1 ? '' : 's'} (retry cap ${maxRetries}).` } }
+      }
+      c.feedback = tail(detail)
+      return { next: repair }
+    }
+
+    // --- the chain each parallel copy walks (agents and command gates only) -------
+    const copyLoop = async (c: Ctx, start: BlueprintNode | undefined): Promise<Stop | null> => {
+      let node = start
+      while (node && node.kind !== 'join') {
+        if (c.signal.aborted) return stopOf(c)
+        if (++c.executions > MAX_NODE_EXECUTIONS) return { status: 'failed', reason: 'Stopped: too many steps (possible loop).' }
+        const attempt = nextAttempt(node.id)
+        let r: Step
+        if (node.kind === 'agent') r = await agentStep(c, node, attempt)
+        else if (node.kind === 'gate' && node.config.check === 'command') r = await gateStep(c, node, attempt)
+        else return { status: 'failed', reason: `"${node.label || node.kind}" cannot run inside parallel copies.` }
+        if ('stop' in r) return r.stop
+        node = r.next
+      }
+      return null
+    }
+
+    /** Removes a copy's scratch directory, keeping (or, for a loser, dropping) its branch. */
+    const discard = async (wt: git.Worktree, dropBranch: boolean): Promise<void> => {
+      try {
+        if (!wt.detached) await git.commitAll(wt.path, 'agentship: work in progress at end of parallel section').catch(() => false)
+      } finally {
+        await git.removeWorktree(a.projectPath, wt)
+      }
+      // Only ever a branch this run made itself.
+      if (dropBranch && wt.branch.startsWith('agentship/')) await git.deleteBranch(a.projectPath, wt.branch)
+    }
+
+    /** An agent reads each passing copy's diff and names the best one. */
+    const judgeCopies = async (
+      join: Extract<BlueprintNode, { kind: 'join' }>,
+      passers: Ctx[],
+      base: string
+    ): Promise<{ chosen: Ctx; note: string; cost: number; tokens: number } | { stop: Stop }> => {
+      const cheapest = passers.reduce((m, c) => (c.cost < m.cost ? c : m))
+      const fallback = (why: string, cost = 0, tokens = 0): { chosen: Ctx; note: string; cost: number; tokens: number } => ({
+        chosen: cheapest,
+        note: `${why}, so the cheapest passing copy was kept`,
+        cost,
+        tokens
+      })
+      const remaining = remainingUsd()
+      if (remaining < MIN_STEP_USD) return fallback('There was no budget left for the judge')
+
+      const attempts: string[] = []
+      for (const c of passers) {
+        const diff = c.worktrees.size && c.branch ? await git.diffText(a.projectPath, base, c.branch) : ''
+        attempts.push(`### Copy ${c.copy!.index}${c.branch && c.worktrees.size ? ` (branch ${c.branch})` : ''}\nIts final message:\n${clip(c.upstream, 1_500)}\n${diff ? `\nWhat it changed:\n${diff}` : ''}`)
+      }
+      const task = Object.entries(a.inputs).map(([k, v]) => `${k}: ${clip(v, 2_000)}`).join('\n')
+      const prompt = [
+        `${passers.length} agents independently attempted the same task. Each attempt already passed its checks. Pick the single best one.`,
+        task ? `\nThe task:\n${task}` : '',
+        `\nWhat "best" means here: ${join.config.criteria.trim() || 'correct first, then the smallest change that fully does the job, then clarity.'}`,
+        `\n${attempts.join('\n\n')}`,
+        `\nAnswer with JSON: {"winner": <the copy number>, "reason": "<one or two sentences>"}. The winner must be one of: ${passers.map((c) => c.copy!.index).join(', ')}.`
+      ].join('\n')
+
+      const capUsd = Math.min(join.budget?.maxUsd ?? bp.defaultBudget.maxUsd ?? remaining, remaining)
+      reserved += capUsd
+      let res: StepResult
+      try {
+        res = await this.deps.adapter.run({
+          prompt,
+          cwd: a.projectPath,
+          sessionId: crypto.randomUUID(),
+          resume: false,
+          model: 'default',
+          access: 'read',
+          tools: [],
+          maxUsd: capUsd,
+          jsonSchema: JUDGE_SCHEMA,
+          env: { AGENT_SHIP_NAME: 'Judge', AGENT_SHIP_ROLE: 'Judge', AGENT_SHIP_TASK: `${bp.name}: pick the best of ${passers.length}` },
+          timeoutMs: (join.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000,
+          signal: live.abort.signal
+        })
+      } finally {
+        reserved -= capUsd
+      }
+      spent += res.costUsd
+      if (res.cancelled) return { stop: stopOf(main) }
+      if (!res.ok) return fallback(`The judge failed (${res.error ?? 'unknown error'})`, res.costUsd, res.tokens)
+      const s = res.structured as { winner?: unknown; reason?: unknown } | undefined
+      const chosen = passers.find((c) => c.copy!.index === s?.winner)
+      if (!chosen) return fallback('The judge did not name one of the passing copies', res.costUsd, res.tokens)
+      return { chosen, note: `Judge: ${clip(String(s?.reason ?? 'no reason given'), 400)}`, cost: res.costUsd, tokens: res.tokens }
+    }
+
+    // --- a parallel section: Fan-out, N copies of the chain, Join -------------------
+    const section = async (fan: Extract<BlueprintNode, { kind: 'fanout' }>, attempt: number): Promise<Step> => {
+      const { join } = parallelSection(bp, fan.id)
+      if (!join) return { stop: { status: 'failed', reason: `Fan-out "${fan.label || 'fan-out'}" has no Join.` } }
+      const first = nextNode(bp, fan, 'next')
+      const total = fan.config.count
+      const strategy = join.config.strategy
+      const need = strategy === 'all' ? total : strategy === 'quorum' ? join.config.quorum : 1
+      const base = main.branch ?? 'HEAD'
+
+      emit({ type: 'node.started', at: this.now(), runId, nodeId: fan.id, attempt, cwd: main.cwd, copies: total })
+
+      // Copies stop when the run stops, or earlier when the join is already decided.
+      const controller = new AbortController()
+      const relay = (): void => controller.abort()
+      live.abort.signal.addEventListener('abort', relay, { once: true })
+      if (live.abort.signal.aborted) controller.abort()
+
+      const copies = Array.from({ length: total }, (_, i): Ctx => ({
+        cwd: main.cwd,
+        branch: main.branch,
+        upstream: main.upstream,
+        feedback: '',
+        sessions: new Map(),
+        worktrees: new Map(),
+        fails: new Map(),
+        signal: controller.signal,
+        copy: { index: i + 1, total },
+        local: {},
+        executions: 0,
+        cost: 0
+      }))
+      const outcome: (Stop | null | undefined)[] = new Array<Stop | null | undefined>(total).fill(undefined)
+      const passOrder: number[] = []
+      let keep: Ctx | undefined
+      let dropLosers = false
+
+      try {
+        let cursor = 0
+        const worker = async (): Promise<void> => {
+          while (cursor < total) {
+            const i = cursor++
+            if (controller.signal.aborted) {
+              outcome[i] = { status: 'cancelled', reason: 'Not started: the join was already decided.', superseded: true }
+              continue
+            }
+            const stop = await copyLoop(copies[i], first)
+            outcome[i] = stop
+            if (stop === null) passOrder.push(i)
+            const hardFails = outcome.filter((o) => o && !o.superseded).length
+            const decidedYes = (strategy === 'first' || strategy === 'quorum') && passOrder.length >= need
+            const decidedNo = total - hardFails < need
+            if (decidedYes || decidedNo) controller.abort()
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL, total) }, worker))
+        live.abort.signal.removeEventListener('abort', relay)
+
+        const passes = passOrder.length
+        const failures = copies
+          .map((c, i) => ({ c, o: outcome[i] }))
+          .filter((x): x is { c: Ctx; o: Stop } => Boolean(x.o) && !x.o!.superseded)
+        emit({
+          type: 'node.finished',
+          at: this.now(),
+          runId,
+          nodeId: fan.id,
+          attempt,
+          status: passes >= need ? 'passed' : 'failed',
+          costUsd: 0,
+          tokens: 0,
+          summary: `${passes} of ${total} cop${total === 1 ? 'y' : 'ies'} finished${copies.some((_, i) => outcome[i]?.superseded) ? '; the rest were stopped once the join was decided' : ''}.`
+        })
+        if (live.abort.signal.aborted) return { stop: stopOf(main) }
+
+        // --- the join -----------------------------------------------------------
+        const jAttempt = nextAttempt(join.id)
+        emit({ type: 'node.started', at: this.now(), runId, nodeId: join.id, attempt: jAttempt, cwd: main.cwd })
+        const jLabel = join.label || 'join'
+        const joinFailed = (reason: string, status: Finish = 'failed'): Step => {
+          emit({ type: 'node.finished', at: this.now(), runId, nodeId: join.id, attempt: jAttempt, status: 'failed', costUsd: 0, tokens: 0, summary: '', error: reason })
+          return { stop: { status, reason } }
+        }
+
+        if (passes < need) {
+          const why = failures.map((x) => `copy ${x.c.copy!.index}: ${x.o.reason}`).join('; ')
+          const allBudget = failures.length > 0 && failures.every((x) => x.o.status === 'budget')
+          const needs = strategy === 'all' ? `all ${total} copies` : strategy === 'quorum' ? `${need} of ${total} copies` : 'at least one copy'
+          return joinFailed(`Join "${jLabel}" needs ${needs} to finish; ${passes} did.${why ? ` ${why}` : ''}`, allBudget ? 'budget' : 'failed')
+        }
+
+        const passers = passOrder.slice().sort((x, y) => x - y).map((i) => copies[i])
+        let chosen: Ctx | undefined
+        let note = ''
+        let cost = 0
+        let tokens = 0
+        if (strategy === 'first') {
+          chosen = copies[passOrder[0]]
+        } else if (strategy === 'best') {
+          if (passers.length === 1) {
+            chosen = passers[0]
+          } else {
+            const j = await judgeCopies(join, passers, base)
+            if ('stop' in j) return joinFailed(j.stop.reason, j.stop.status)
+            ;({ chosen, note, cost, tokens } = j)
+          }
+        }
+
+        let summary: string
+        let branch: string | undefined
+        let cwd: string | undefined
+        if (chosen) {
+          const own = chosen.worktrees.size > 0
+          main.upstream = chosen.upstream
+          if (own) {
+            main.branch = chosen.branch
+            main.cwd = chosen.cwd
+            branch = chosen.branch
+            cwd = chosen.cwd
+          }
+          keep = chosen
+          dropLosers = true
+          summary = `Picked copy ${chosen.copy!.index} of ${total}${note ? `. ${note}` : ''}.\n\n${chosen.upstream}`
+        } else {
+          // all / quorum: every passing copy is an outcome; nothing is chosen between them.
+          const lines = passers.map((c) => `Copy ${c.copy!.index}${c.worktrees.size && c.branch ? ` (branch ${c.branch})` : ''}:\n${c.upstream}`)
+          main.upstream = lines.join('\n\n')
+          summary = `${passers.length} of ${total} copies finished.\n\n${main.upstream}`
+        }
+        emit({ type: 'node.finished', at: this.now(), runId, nodeId: join.id, attempt: jAttempt, status: 'passed', costUsd: cost, tokens, summary: clip(summary), branch, cwd })
+        return { next: outEdge(join, 'next') }
+      } finally {
+        live.abort.signal.removeEventListener('abort', relay)
+        // Scratch directories all go. The winner's stays for the rest of the run.
+        for (const c of copies) {
+          for (const [key, wt] of c.worktrees) {
+            if (c === keep) main.worktrees.set(`${fan.id}:${key}`, wt)
+            else await discard(wt, dropLosers).catch(() => undefined)
+          }
+        }
+      }
+    }
 
     try {
       let node = seed.node
@@ -251,177 +723,43 @@ export class RunEngine {
       const ownBranch = bp.nodes.some((n) => n.kind === 'agent' && n.config.worktree)
       if (merging && !ownBranch && under) {
         const wt = await git.createDetachedWorktree(a.projectPath, this.deps.worktreeRoot, `${short}-src`, under)
-        worktrees.set('__source', wt)
-        cwd = wt.path
-        branch = under
+        main.worktrees.set('__source', wt)
+        main.cwd = wt.path
+        main.branch = under
       }
 
       while (node) {
         if (live.abort.signal.aborted) return stopped()
-        if (++executions > MAX_NODE_EXECUTIONS) return finish('failed', 'Stopped: too many steps (possible loop).')
+        if (++main.executions > MAX_NODE_EXECUTIONS) return finish('failed', 'Stopped: too many steps (possible loop).')
 
-        const attempt = (runs.get(node.id) ?? 0) + 1
-        runs.set(node.id, attempt)
+        const attempt = nextAttempt(node.id)
 
-        if (node.kind === 'agent') {
-          const remaining = ceilingUsd - spent
-          if (remaining < MIN_STEP_USD) return finish('budget', `The run's spending ceiling ($${ceilingUsd < 1 ? ceilingUsd.toFixed(3) : ceilingUsd.toFixed(2)}) is used up.`)
-
-          const prior = sessions.get(node.id)
-          let stepCwd = cwd
-          let stepBranch = branch
-          if (node.config.worktree) {
-            let wt = worktrees.get(node.id)
-            if (!wt) {
-              wt = await git.createWorktree(a.projectPath, this.deps.worktreeRoot, `${short}-${git.safeName(node.id)}`, branch ?? 'HEAD')
-              worktrees.set(node.id, wt)
-            }
-            stepCwd = wt.path
-            stepBranch = wt.branch
-          }
-          if (prior) stepCwd = prior.cwd
-
-          const sessionId = prior?.id ?? crypto.randomUUID()
-          const resume = Boolean(prior)
-          const vars = promptVars(view(), upstream, { branch: stepBranch ?? '' })
-          const base = renderTemplate(node.config.prompt, vars)
-          const prompt = resume
-            ? `The check after your last change failed. Fix the problems, then reply with a short summary.\n\n${feedback}`
-            : feedback
-              ? `${base}\n\nA previous check failed:\n${feedback}`
-              : base
-          feedback = ''
-
-          const capUsd = Math.min(node.budget?.maxUsd ?? bp.defaultBudget.maxUsd ?? remaining, remaining)
-          emit({ type: 'node.started', at: this.now(), runId, nodeId: node.id, attempt, cwd: stepCwd, branch: stepBranch, sessionId })
-
-          const res = await this.deps.adapter.run({
-            prompt,
-            cwd: stepCwd,
-            sessionId,
-            resume,
-            model: node.config.model,
-            access: node.config.access,
-            tools: node.config.tools,
-            maxUsd: capUsd,
-            jsonSchema: node.config.outputSchema,
-            env: {
-              AGENT_SHIP_NAME: node.label || node.config.role,
-              AGENT_SHIP_ROLE: node.config.role,
-              AGENT_SHIP_TASK: `${bp.name}: ${node.label || node.config.role}`
-            },
-            timeoutMs: (node.budget?.maxMinutes ?? DEFAULT_AGENT_MINUTES) * 60_000,
-            signal: live.abort.signal
-          })
-
-          spent += res.costUsd
-          // A killed or failed step may have left no resumable session behind.
-          if (res.ok) sessions.set(node.id, { id: res.sessionId, cwd: stepCwd })
-
-          // Whatever the agent left becomes commits on its branch, so the
-          // work survives the worktree being removed.
-          if (node.config.worktree && stepBranch) {
-            try {
-              await git.commitAll(stepCwd, `agentship: ${node.label || node.config.role} (${bp.name})`)
-            } catch (err) {
-              res.ok = false
-              res.error = `Could not commit the agent's work: ${(err as Error).message}`
-            }
-          }
-
-          const overTokens = node.budget?.maxTokens ?? bp.defaultBudget.maxTokens
-          const tokenBust = Boolean(overTokens && res.tokens > overTokens)
-
-          emit({
-            type: 'node.finished',
-            at: this.now(),
-            runId,
-            nodeId: node.id,
-            attempt,
-            status: res.ok && !tokenBust ? 'passed' : 'failed',
-            costUsd: res.costUsd,
-            tokens: res.tokens,
-            summary: clip(res.structured !== undefined ? JSON.stringify(res.structured) : res.result),
-            error: res.ok && !tokenBust ? undefined : tokenBust ? `Used ${res.tokens.toLocaleString()} tokens; the limit was ${overTokens!.toLocaleString()}.` : (res.error ?? 'Failed.'),
-            branch: stepBranch
-          })
-
-          if (stepBranch) {
-            branch = stepBranch
-            cwd = stepCwd
-          }
-          if (res.cancelled) return stopped()
-          if (res.budgetExhausted) return finish('budget', `"${node.label || node.config.role}" hit its dollar limit.`)
-          if (tokenBust) return finish('budget', `"${node.label || node.config.role}" exceeded its token limit.`)
-          if (!res.ok) return finish('failed', `"${node.label || node.config.role}" failed: ${res.error ?? 'unknown error'}`)
-
-          upstream = clip(res.structured !== undefined ? JSON.stringify(res.structured) : res.result)
-          node = outEdge(node, 'next')
-          continue
-        }
-
-        if (node.kind === 'gate') {
-          emit({ type: 'node.started', at: this.now(), runId, nodeId: node.id, attempt, cwd })
-          let pass = false
-          let detail = ''
-          let by: 'command' | 'human' = 'command'
-
-          if (node.config.check === 'human') {
-            by = 'human'
-            emit({ type: 'gate.awaiting', at: this.now(), runId, nodeId: node.id, attempt, instructions: node.config.instructions || 'Approve to continue.' })
-            const decision = await new Promise<{ approve: boolean; note: string }>((resolve) => {
-              live.decide = resolve
-              live.abort.signal.addEventListener('abort', () => resolve({ approve: false, note: 'Run cancelled.' }), { once: true })
-            })
-            live.decide = undefined
-            pass = decision.approve
-            detail = decision.note || (pass ? 'Approved.' : 'Rejected.')
-          } else {
-            const out = await runCommand(node.config.command, cwd, (node.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000, live.abort.signal)
-            pass = out.code === 0
-            detail = out.timedOut ? `Timed out.\n${out.tail}` : `exit ${out.code}\n${out.tail}`
-          }
-
-          emit({ type: 'gate.result', at: this.now(), runId, nodeId: node.id, attempt, pass, by, detail: clip(detail, 6_000) })
-          if (live.abort.signal.aborted) return stopped()
-
-          if (pass) {
-            node = outEdge(node, 'pass')
-            continue
-          }
-
-          const failCount = (fails.get(node.id) ?? 0) + 1
-          fails.set(node.id, failCount)
-          const repair = outEdge(node, 'fail')
-          const maxRetries = node.budget?.maxRetries ?? 0
-          if (!repair) return finish('failed', `Gate "${node.label || 'gate'}" failed.`)
-          if (failCount > maxRetries) {
-            return finish('failed', `Gate "${node.label || 'gate'}" still failing after ${failCount} attempt${failCount === 1 ? '' : 's'} (retry cap ${maxRetries}).`)
-          }
-          feedback = tail(detail)
-          node = repair
+        if (node.kind === 'agent' || node.kind === 'gate' || node.kind === 'fanout') {
+          const r = node.kind === 'agent' ? await agentStep(main, node, attempt) : node.kind === 'gate' ? await gateStep(main, node, attempt) : await section(node, attempt)
+          if ('stop' in r) return finish(r.stop.status, r.stop.reason)
+          node = r.next
           continue
         }
 
         if (node.kind === 'merge' || node.kind === 'land') {
           const label = node.label || node.kind
           const thisId = node.id
-          emit({ type: 'node.started', at: this.now(), runId, nodeId: thisId, attempt, cwd })
+          emit({ type: 'node.started', at: this.now(), runId, nodeId: thisId, attempt, cwd: main.cwd })
           const failed = (reason: string, cost = 0, tokens = 0): void => {
             emit({ type: 'node.finished', at: this.now(), runId, nodeId: thisId, attempt, status: 'failed', costUsd: cost, tokens, summary: '', error: reason })
             finish('failed', reason)
           }
-          const base = renderTemplate(node.config.baseBranch, promptVars(view(), upstream, { branch: branch ?? '' })).trim()
+          const base = renderTemplate(node.config.baseBranch, promptVars(view(), main.upstream, { branch: main.branch ?? '' })).trim()
           if (!base || !(await git.refExists(a.projectPath, `refs/heads/${base}`))) {
             return failed(`The base branch "${base || node.config.baseBranch}" does not exist. Nothing was changed.`)
           }
 
           if (node.kind === 'merge') {
-            const source = branch ?? ''
+            const source = main.branch ?? ''
             if (!source) return failed('There is no branch to merge. Nothing was changed.')
             const baseTip = await git.tip(a.projectPath, `refs/heads/${base}`)
             const wt = await git.createDetachedWorktree(a.projectPath, this.deps.worktreeRoot, `${short}-merge`, baseTip)
-            worktrees.set('__merge', wt)
+            main.worktrees.set('__merge', wt)
 
             let cost = 0
             let tokens = 0
@@ -443,7 +781,7 @@ export class RunEngine {
                 return finish('budget', 'The run has no budget left to resolve merge conflicts.')
               }
               const prompt = renderTemplate(node.config.resolverPrompt || RESOLVER_PROMPT, {
-                ...promptVars(view(), upstream),
+                ...promptVars(view(), main.upstream),
                 branch: source,
                 baseBranch: base,
                 conflicts: files.map((f) => `  - ${f}`).join('\n')
@@ -493,7 +831,7 @@ export class RunEngine {
 
             const sha = await git.head(wt.path)
             integ = { wt, baseTip, sha, base }
-            cwd = wt.path // later gates test the merged result, not the branch
+            main.cwd = wt.path // later gates test the merged result, not the branch
             emit({ type: 'node.finished', at: this.now(), runId, nodeId: node.id, attempt, status: 'passed', costUsd: cost, tokens, summary })
             node = outEdge(node, 'next')
             continue
@@ -544,7 +882,7 @@ export class RunEngine {
       finish('failed', `Engine error: ${(err as Error).message}`)
     } finally {
       // Branches stay; only the scratch directories go.
-      for (const wt of worktrees.values()) {
+      for (const wt of main.worktrees.values()) {
         try {
           // Only branches an agent made keep their work; scratch copies just go.
           if (!wt.detached) await git.commitAll(wt.path, 'agentship: work in progress at end of run').catch(() => false)
