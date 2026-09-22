@@ -423,7 +423,7 @@ A full pass over the application and its components, run against the real thing 
 - **`package-lock.json` is git-ignored**, so `npm install` in CI and for users is not reproducible. Recommend committing it and using `npm ci`; left as a decision.
 - **The smoke test is not hermetic:** it reads the real `~/.claude` sessions, so the Floor it screenshots shows whoever runs it.
 - **Two copies of the hook logic** (TS and JS) because `npm install` runs before there is a build. Kept honest by running the same scenarios against both.
-- **Small wording inconsistency:** the Land dialog says "Nothing detected for this project" while the test-command field is already filled from a flow's gate.
+- ~~**Small wording inconsistency:** the Land dialog says "Nothing detected for this project" while the test-command field is already filled from a flow's gate.~~ **Checked 2026-09-22 while writing `PLAN.md`, and this was wrong:** `land:plan`'s `testCommand` and `testSource` (`detectTestCommand` in `gitops.ts`) are always set together - there is no path where the field is filled but the source is empty. No fix needed; this note should not have stood uncorrected this long.
 - **Passed runs fold into their branch card** on the Floor, so per-copy steps are only visible in the editor's run drawer.
 
 ## Sources
