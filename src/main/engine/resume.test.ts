@@ -239,6 +239,28 @@ describe('planResume', () => {
     expect(s.sessions.get('build')?.id).toBeTruthy() // repairs resume this session
   })
 
+  it('rebuilds the SAME parsed repair feedback as the original run, not just the raw tail, since resume re-derives it from the stored detail', () => {
+    const bp = pipeline(fileExists)
+    const id = 'ffffffff-0000-0000-0000-000000000000'
+    const at = 1
+    const events: RunEvent[] = [
+      { type: 'node.started', at, runId: id, nodeId: 'tests', attempt: 1, cwd: repo },
+      {
+        type: 'gate.result',
+        at,
+        runId: id,
+        nodeId: 'tests',
+        attempt: 1,
+        pass: false,
+        by: 'command',
+        detail: 'exit 1\nFAILED tests/test_x.py::test_build - AssertionError: nope\n===================== 1 failed, 3 passed in 0.10s ====================='
+      }
+    ]
+    const s = planResume(events, bp, repo)
+    expect(s.feedback).toContain('tests/test_x.py::test_build')
+    expect(s.feedback).toContain('1 failed, 3 passed')
+  })
+
   it('after a passing gate goes on to the reviewer, which works in the builder branch', async () => {
     const { events, bp } = await fullRun()
     const passed = upTo(events, (e) => e.type === 'gate.result' && e.pass)

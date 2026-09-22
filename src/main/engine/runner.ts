@@ -11,6 +11,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parallelSection, renderTemplate, unrunnableReasons, usdCeiling } from '../../shared/blueprint'
+import { repairFeedback } from '../../shared/gateParse'
 import { RESOLVER_PROMPT } from '../../shared/patterns'
 import { foldRun, isResumable, promptVars, type NodeRun, type RunEvent, type RunView } from '../../shared/runs'
 import type { Blueprint, BlueprintNode } from '../../shared/schema'
@@ -478,7 +479,10 @@ export class RunEngine {
       if (failCount > maxRetries) {
         return { stop: { status: 'failed', reason: `Gate "${node.label || 'gate'}" still failing after ${failCount} attempt${failCount === 1 ? '' : 's'} (retry cap ${maxRetries}).` } }
       }
-      c.feedback = tail(detail)
+      // A recognised test/lint runner's own failure list makes a far more
+      // addressable prompt than a raw output tail; falls back to the tail
+      // untouched when the tool or its format isn't one we know.
+      c.feedback = repairFeedback(detail)
       return { next: repair }
     }
 

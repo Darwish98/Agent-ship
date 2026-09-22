@@ -145,6 +145,29 @@ describe('run engine', () => {
     expect(v.nodes.tests.attempts).toBe(2)
   })
 
+  it('recognises a familiar test runner\'s output and repairs with its parsed failures, not the raw log', async () => {
+    // Prints pytest-shaped output until built.txt exists, exactly like a real test run would.
+    const pytestLike =
+      'node -e "if(require(\'fs\').existsSync(\'built.txt\')){process.exit(0)}' +
+      'console.log(\'FAILED tests/test_x.py::test_build - AssertionError: built.txt missing\');' +
+      'console.log(\'===================== 1 failed, 3 passed in 0.10s =====================\');' +
+      'process.exit(1)"'
+    const fake = new Fake((req) => {
+      if (req.access === 'edit' && req.resume) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
+      return ok({ sessionId: req.sessionId })
+    })
+    const { engine, events } = harness(fake)
+    const r = await engine.start(args(pipeline(pytestLike)))
+    if (!r.ok) throw new Error(r.error)
+    await engine.whenDone(r.runId)
+
+    expect(finalView(events).status).toBe('passed')
+    const repair = fake.reqs.filter((q) => q.access === 'edit')[1]
+    expect(repair.prompt).toContain('1 failed, 3 passed')
+    expect(repair.prompt).toContain('tests/test_x.py::test_build')
+    expect(repair.prompt).toContain('AssertionError: built.txt missing')
+  })
+
   it('stops when a gate is still failing after its retry cap', async () => {
     const fake = new Fake(() => ok())
     const { engine, events } = harness(fake)

@@ -1,4 +1,5 @@
 import { useState, type JSX } from 'react'
+import { parseGateOutput } from '../../../shared/gateParse'
 import { formatUsd, isActive, isResumable, type NodeState, type RunStatus, type RunView } from '../../../shared/runs'
 import { formatAgo, formatTokens } from '../lib/crew'
 import { useNav } from '../nav'
@@ -154,6 +155,11 @@ export function RunDetail({ run, onSelectNode, inEditor }: Props): JSX.Element {
         {steps.map((s, i) => {
           const idx = run.steps.indexOf(s)
           const expanded = open.has(idx)
+          // Only a command gate's detail is in the "exit N\n<output>" shape
+          // parseGateOutput expects; an agent's summary or a human note isn't.
+          const node = run.blueprint.nodes.find((n) => n.id === s.nodeId)
+          const isCommandGate = node?.kind === 'gate' && node.config.check === 'command'
+          const parsed = isCommandGate && s.detail ? parseGateOutput(s.detail) : null
           return (
             <li key={idx} className={`rd-step rd-step-${s.state}`}>
               <button
@@ -175,11 +181,26 @@ export function RunDetail({ run, onSelectNode, inEditor }: Props): JSX.Element {
                   {s.copy === undefined && s.attempt > 1 ? ` · attempt ${s.attempt}` : ''}
                 </span>
                 <span className="rd-step-meta">
+                  {parsed?.tool ? `${parsed.summary} · ` : ''}
                   {s.costUsd > 0 ? `${formatUsd(s.costUsd)} · ${formatTokens(s.tokens)} tok` : ''}
                   {s.endedAt ? ` ${formatDuration(s.endedAt - s.startedAt)}` : ''}
                 </span>
               </button>
-              {expanded && <pre className="rd-out">{s.detail || '(no output)'}</pre>}
+              {expanded && (
+                <>
+                  {parsed && parsed.failures.length > 0 && (
+                    <ul className="rd-gate-failures">
+                      {parsed.failures.map((f, fi) => (
+                        <li key={fi}>
+                          <code>{f.name}</code>
+                          {f.message ? `: ${f.message}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <pre className="rd-out">{s.detail || '(no output)'}</pre>
+                </>
+              )}
             </li>
           )
         })}
