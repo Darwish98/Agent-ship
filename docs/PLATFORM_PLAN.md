@@ -387,6 +387,42 @@ What is *not* new: the four-lane board resembles agent view and Superset's categ
 
 ---
 
+## 13. Verification pass (2026-09-21, before Phase 3 continues)
+
+A full pass over the application and its components, run against the real thing wherever it was possible. Findings are listed with what was done about each; nothing here is a claim from reading code alone unless marked.
+
+### 13.1 What was run, and the result
+
+| Layer | How | Result |
+|---|---|---|
+| Types, build | `npm run typecheck`, `npm run build` | clean |
+| Unit / integration | `npm test`: **237 tests** in 12 files, real git repos, fake CLI | pass (4 live tests skipped by default) |
+| Real `claude` CLI | `AGENT_SHIP_LIVE=1`: one-agent flow; dollar cap; gate repair by *resuming the real session*; **real merge-conflict resolution**; **a real 2-copy tournament with the real judge** | 5 of 5 pass, about $0.5 in total (the tournament: $0.10, 19 s) |
+| Electron, dev build | `npm run smoke`: Floor soak, a flow run from the UI, Land, Commit & land, editor, external edits | pass |
+| Electron, parallel + resume | `npm run smoke:parallel`: tournament from the Floor; **window closed mid-run → Interrupted → Resume**; **app killed with `taskkill /F` mid-run → orphans → next launch → Resume** | pass (50+ checks) |
+| Electron, packaged | `electron-builder --win --dir`, then `npm run smoke:packaged <dir>`: starts from the installer layout, installs *its own* hook once, hook runs from both Git Bash and cmd.exe through the packaged executable, event appears in the UI, no second app instance | pass |
+| Screenshots | reviewed by eye (Floor, Land dialog) | coherent |
+
+### 13.2 Defects found, and fixed
+
+1. **The packaged app's hook was broken under Git Bash.** Claude Code runs hooks through bash on Windows (checked against the real CLI); the packaged command used `set ELECTRON_RUN_AS_NODE=1&& "Agent Ship.exe" …`, which is cmd-only and in bash silently launches the whole GUI instead of the bridge. Dev installs (`node "…"`) never showed it. Now a small `.cmd` launcher on Windows (works from both shells), an env prefix elsewhere. Test runs the real command in both shells and proves the old form fails. *macOS/Linux: written, not run.*
+2. **The hook installer damaged the user's settings in three ways.** It rewrote `~/.claude/settings.json` in place (a crash mid-write could corrupt permissions), it never removed older untagged copies (**this machine's real settings had 3 hooks per event, so every tool call in every session spawned the bridge 3 times**), and a moved app left a dead path behind. Now: exactly one hook per event, kept current, other hooks and settings untouched, atomic write, one-time backup, unparseable files left alone. 22 tests over both implementations (`src/main/hooks.ts` and `scripts/install-hooks.js`). Applied to a copy of the real file: 18 hook entries → 6.
+3. **Any web page could inject fake agent events** into the Floor (a browser can POST to 127.0.0.1 with `text/plain`). The server now refuses requests with an `Origin` header (browsers always send one, the bridge never does) and a non-loopback `Host` (DNS rebinding). The real bridge is tested against it.
+4. **Renderer-supplied `openExternal` and `taskkill` were unchecked.** Only http/https/mailto may open; navigating the window away from the app is blocked; `agent:stop` only kills a pid Claude Code itself lists. The renderer sandbox is now on (the preload needs only `electron`; both smoke suites pass with it).
+5. **CI was broken and untested.** The tag workflow ran a `dist` script that does not exist; nothing ran the tests. Fixed, and a Test workflow added (Windows required; Linux runs but does not block, because the engine has never been run on POSIX).
+6. **The reported test count was inflated.** Vitest was also running seven test files from an old checkout in `.claude/worktrees/`. A `vitest.config.ts` now excludes them; the true count is 237, not the 361 quoted earlier in this session.
+7. **A live test depended on the model's price** (the $0.02 cap was not reached when the CLI got cheaper). Now uses a task that needs several calls.
+8. **A stale window can look like a bug.** `electron-vite preview` serves `out/`, which only changes on a build, and a mid-session build from a branch that predated the landing pipeline made "Land" spawn the removed merge-orchestrator. The window title and log now carry the commit and build time.
+
+### 13.3 Known, not fixed
+
+- **Not exercised:** macOS and Linux (process-tree kill, `detached`, the env-prefix hook command); a real hard kill *of a real Claude session mid-step* (the fake CLI stands in for the process that was killed); more than the 4-copy limit at real load; the installer (`.exe` NSIS) itself, only its unpacked contents.
+- **`package-lock.json` is git-ignored**, so `npm install` in CI and for users is not reproducible. Recommend committing it and using `npm ci`; left as a decision.
+- **The smoke test is not hermetic:** it reads the real `~/.claude` sessions, so the Floor it screenshots shows whoever runs it.
+- **Two copies of the hook logic** (TS and JS) because `npm install` runs before there is a build. Kept honest by running the same scenarios against both.
+- **Small wording inconsistency:** the Land dialog says "Nothing detected for this project" while the test-command field is already filled from a flow's gate.
+- **Passed runs fold into their branch card** on the Floor, so per-copy steps are only visible in the editor's run drawer.
+
 ## Sources
 
 - Market: [MarketsandMarkets — Agentic AI](https://www.marketsandmarkets.com/Market-Reports/agentic-ai-market-208190735.html) · [Mordor — workflow orchestration](https://www.mordorintelligence.com/industry-reports/agentic-ai-workflow-orchestration-platform-market) · [Mordor — multi-agent platforms](https://www.mordorintelligence.com/industry-reports/multi-agent-system-platform-market)

@@ -15,7 +15,9 @@
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:linux": "electron-vite build && electron-builder --linux",
     "test": "vitest run",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:parallel": "node scripts/smoke-parallel.mjs",
+    "smoke:packaged": "node scripts/smoke-packaged.mjs"
   },
   "author": "",
   "license": "MIT",

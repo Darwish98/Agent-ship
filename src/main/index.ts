@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
+import fs from 'node:fs'
 import path from 'node:path'
 import { foldRun, type RunEvent } from '../shared/runs'
 import {
@@ -17,6 +18,7 @@ import { RunEngine, worktreeRootFor } from './engine/runner'
 import { RunStore } from './engine/store'
 import { deleteFlow, listFlows, loadFlow, peekFlow, saveFlow } from './flows'
 import { gitState, unmergedBranches } from './git'
+import { hookCommand } from './hookcommand'
 import { installHooks } from './hooks'
 import { installCrashLogging, log, logPath } from './log'
 import { startServer, type AgentEvent } from './server'
@@ -31,6 +33,7 @@ let engine: RunEngine | null = null
 let runStore: RunStore | null = null
 
 app.setName('Agent Ship')
+const SAFE_EXTERNAL = /^(https?|mailto):/i
 const BUILD = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev'
 installCrashLogging()
 
@@ -51,23 +54,25 @@ function userDataDir(): string {
   return app.getPath('userData')
 }
 
-// In the packaged app there is no guarantee the user has Node.js installed
-// separately, so hooks point at the app's own bundled runtime, run in plain
-// Node mode via ELECTRON_RUN_AS_NODE.
+// The command Claude Code runs for each hook. See hookcommand.ts for why it is
+// not a one-liner on Windows (Claude Code runs hooks in Git Bash there).
 function resolveHookCommand(): string {
-  const bridgePath = app.isPackaged
-    ? path.join(process.resourcesPath, 'hooks', 'bridge.js')
-    : path.join(app.getAppPath(), 'hooks', 'bridge.js')
-
-  if (!app.isPackaged) return `node "${bridgePath}"`
-
-  const execPath = process.execPath
-  // No outer `cmd /c "..."` wrapper: whatever invokes this command string
-  // already runs it through a shell. Adding a manual wrapper double-nests
-  // cmd.exe and the escaped inner quotes don't survive the second parse.
-  return process.platform === 'win32'
-    ? `set ELECTRON_RUN_AS_NODE=1&& "${execPath}" "${bridgePath}"`
-    : `ELECTRON_RUN_AS_NODE=1 "${execPath}" "${bridgePath}"`
+  const hc = hookCommand({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    execPath: process.execPath,
+    bridgePath: app.isPackaged ? path.join(process.resourcesPath, 'hooks', 'bridge.js') : path.join(app.getAppPath(), 'hooks', 'bridge.js'),
+    dataDir: userDataDir()
+  })
+  if (hc.launcher) {
+    // Rewritten each launch, so an app that moved or updated points at itself.
+    const current = fs.existsSync(hc.launcher.path) ? fs.readFileSync(hc.launcher.path, 'utf8') : ''
+    if (current !== hc.launcher.content) {
+      fs.mkdirSync(path.dirname(hc.launcher.path), { recursive: true })
+      fs.writeFileSync(hc.launcher.path, hc.launcher.content)
+    }
+  }
+  return hc.command
 }
 
 function ensureHooksInstalled(): void {
@@ -95,7 +100,7 @@ function createWindow(): void {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   })
 
@@ -103,10 +108,21 @@ function createWindow(): void {
   // Keep the build id in the title; the page's own <title> would replace it.
   mainWindow.on('page-title-updated', (e) => e.preventDefault())
 
-  // Anything trying to open a new window goes to the real browser instead.
+  // Anything trying to open a new window goes to the real browser instead, and
+  // only as a web or mail link: other schemes (file:, ms-*, custom handlers)
+  // can launch programs, and nothing in this app needs them.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (SAFE_EXTERNAL.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
+  })
+  // The window has a preload bridge to the main process, so it must never
+  // navigate away from the app itself (a stray link would load remote content into it).
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    const home = process.env.ELECTRON_RENDERER_URL
+    const inApp = home ? url.startsWith(home) : url.startsWith('file://')
+    if (inApp) return
+    e.preventDefault()
+    if (SAFE_EXTERNAL.test(url)) void shell.openExternal(url)
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {

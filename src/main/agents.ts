@@ -72,9 +72,14 @@ export async function openSession(sessionId: string): Promise<SpawnResult> {
   }
 }
 
-/** Stops a running session by killing its process tree. */
+/** Stops a running session by killing its process tree. Only a process Claude
+ *  Code itself reports as one of its sessions: the id comes from the UI, and a
+ *  bug there must not be able to kill an arbitrary process. */
 export async function stopAgent(pid: number): Promise<SpawnResult> {
-  if (!pid) return { ok: false, error: 'No process id.' }
+  if (!Number.isInteger(pid) || pid <= 0) return { ok: false, error: 'No process id.' }
+  if (!(await listRunningAgents()).some((a) => a.pid === pid)) {
+    return { ok: false, error: 'That is not a running Claude Code session (it may have just ended).' }
+  }
   try {
     if (process.platform === 'win32') {
       await run('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true })
