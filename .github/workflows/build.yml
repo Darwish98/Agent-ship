@@ -16,14 +16,14 @@ jobs:
           - { os: ubuntu-latest, target: linux }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
       - run: npm install
       # There is no plain `dist` script; each platform has its own (dist:mac, dist:win, dist:linux).
       - run: npm run dist:${{ matrix.target }} -- --publish never
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: agent-ship-${{ matrix.os }}
           path: |
