@@ -225,6 +225,18 @@ export function listSessions(limit = 60): SessionSummary[] {
  * Usage gauge's reading. This is local volume only: Claude Code does not record the
  * account's actual plan limit anywhere on disk, so the percentage shown in
  * the UI is against a budget the user sets, not a real quota.
+ *
+ * One real API call can appear as SEVERAL "assistant" lines in a transcript -
+ * Claude Code writes one line per content block of the response (a thinking
+ * block, a text block, each tool call), and every one of those lines carries
+ * the SAME usage object for that whole call, since usage belongs to the
+ * response, not to one block of it. Summing every line therefore counts a
+ * single call once per content block it happened to have - measured on a
+ * real local history, close to 3x over. `message.id` is the same across every
+ * line of one call (confirmed against real transcripts) and changes for the
+ * next, so it is what a call is deduplicated by; a line missing it (should
+ * not happen, but never trusted blindly) falls back to counting itself once
+ * by its own line id rather than being silently dropped.
  */
 export function weeklyUsage(): UsageWindow {
   const root = projectsDir()
@@ -232,6 +244,7 @@ export function weeklyUsage(): UsageWindow {
   if (!fs.existsSync(root)) return { weeklyTokens: 0, since }
 
   let total = 0
+  const countedCalls = new Set<string>()
   for (const dir of fs.readdirSync(root)) {
     const dirPath = path.join(root, dir)
     let entries: string[]
@@ -250,13 +263,16 @@ export function weeklyUsage(): UsageWindow {
         // Timestamps are per-line, so a file touched this week can still hold
         // older turns - filter turn by turn rather than trusting the mtime.
         const lines = fs.readFileSync(file, 'utf8').split('\n')
-        for (const line of lines) {
+        for (const [i, line] of lines.entries()) {
           if (!line || !line.includes('"usage"')) continue
           const o = safeParse(line)
-          const message = o?.message as { usage?: Usage } | undefined
+          const message = o?.message as { id?: string; usage?: Usage } | undefined
           if (o?.type !== 'assistant' || !message?.usage) continue
           const ts = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN
           if (Number.isFinite(ts) && ts < since) continue
+          const callId = message.id || (typeof o.uuid === 'string' ? o.uuid : `${file}:${i}`)
+          if (countedCalls.has(callId)) continue
+          countedCalls.add(callId)
           total += billedTokens(message.usage)
         }
       } catch {
