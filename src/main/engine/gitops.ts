@@ -280,7 +280,22 @@ export async function currentBranch(cwd: string): Promise<string> {
 /** The repository a checkout belongs to, so a session's checkout (the main one or a linked worktree) can be matched to a project. */
 export async function commonDir(cwd: string): Promise<string> {
   const out = await git(cwd, ['rev-parse', '--git-common-dir'])
-  return path.resolve(cwd, out).replace(/\\/g, '/').toLowerCase()
+  const resolved = path.resolve(cwd, out)
+  // Git can print the SAME directory two different ways depending on how it
+  // was reached: the main worktree's own git-common-dir is often relative
+  // ('.git', resolved against our own path), while a linked worktree's is
+  // always absolute and built by git itself - which on Windows can come out
+  // as an 8.3 short name (e.g. `RUNNER~1`) even when our own path uses the
+  // long form. Canonicalise through the filesystem so both agree; falls back
+  // to the un-canonicalised path if that ever fails (a case this had no
+  // trouble with before realpath was added).
+  let real = resolved
+  try {
+    real = fs.realpathSync.native(resolved)
+  } catch {
+    /* keep `resolved` - see above */
+  }
+  return real.replace(/\\/g, '/').toLowerCase()
 }
 
 /** The tree of everything in the working directory (tracked changes and untracked files, ignore rules respected), built in a throwaway index. */

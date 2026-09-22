@@ -17,8 +17,8 @@ jobs:
     # to find out what breaks, and does not block a merge until it is green.
     continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       # git needs an identity for the tests that make commits.
