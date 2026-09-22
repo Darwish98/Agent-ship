@@ -1,5 +1,6 @@
 import { useState, type JSX } from 'react'
 import { parseGateOutput } from '../../../shared/gateParse'
+import { LAND_FLOW, PLAN_FLOW } from '../../../shared/patterns'
 import { formatUsd, isActive, isResumable, type NodeState, type RunStatus, type RunView } from '../../../shared/runs'
 import { formatAgo, formatTokens } from '../lib/crew'
 import { useNav } from '../nav'
@@ -213,7 +214,7 @@ export function RunDetail({ run, onSelectNode, inEditor }: Props): JSX.Element {
             Stop run
           </button>
         )}
-        {!inEditor && run.flowSlug !== '__land__' && (
+        {!inEditor && run.flowSlug !== LAND_FLOW && run.flowSlug !== PLAN_FLOW && (
           <button type="button" className="btn" onClick={() => nav.openFlow(run.projectId, run.flowSlug, focus ?? run.currentNodeId)}>
             {trouble ? 'Edit flow' : 'Open in flow'}
           </button>

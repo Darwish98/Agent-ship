@@ -1,5 +1,6 @@
 import type { JSX, ReactNode, SyntheticEvent } from 'react'
 import { pendingWork, type Verification, type WorkItem } from '../../../shared/floor'
+import { LAND_FLOW, PLAN_FLOW } from '../../../shared/patterns'
 import { isActive } from '../../../shared/runs'
 import { AgentSprite } from '../components/AgentSprite'
 import { badgeFor, formatAgo, formatTokens, truncate } from '../lib/crew'
@@ -104,7 +105,7 @@ export function RunCard(props: CardProps): JSX.Element {
         {(run.status === 'failed' || run.status === 'budget' || run.status === 'interrupted') && item.lane === 'needs' && (
           <>
             {run.status === 'interrupted' && <ResumeButton runId={run.runId} className="btn btn-primary fc-btn" />}
-            {run.flowSlug !== '__land__' && (
+            {run.flowSlug !== LAND_FLOW && run.flowSlug !== PLAN_FLOW && (
               <button type="button" className="btn fc-btn" onClick={() => actions.editFlow(item)}>
                 Edit flow
               </button>

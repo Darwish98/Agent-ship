@@ -11,7 +11,7 @@ import {
   usdCeiling,
   validateBlueprint
 } from './blueprint'
-import { emptyBlueprint, fromPattern, PATTERNS } from './patterns'
+import { buildPlanBlueprint, emptyBlueprint, fromPattern, PATTERNS, PLAN_FILE } from './patterns'
 import { promptVars } from './runs'
 import { parseBlueprint, type Blueprint } from './schema'
 
@@ -223,10 +223,25 @@ describe('run planning helpers', () => {
     expect(s.ceilingUsd).toBeCloseTo(0.5 + 1 * 4 + 0.5)
   })
 
-  it('ships runnable patterns, including the parallel tournament', () => {
+  it('the plan-writing flow (Autopilot switch, no plan yet) is one agent that writes to the live checkout, and it is runnable', () => {
+    const bp = buildPlanBlueprint()
+    expect(unrunnableReasons(bp)).toEqual([])
+    expect(bp.inputs.map((i) => i.name)).toEqual(['idea'])
+    const write = bp.nodes.find((n) => n.kind === 'agent')!
+    expect(write.kind).toBe('agent')
+    if (write.kind === 'agent') {
+      expect(write.config.worktree).toBe(false) // the plan belongs in the real checkout, not a throwaway branch
+      expect(write.config.access).toBe('edit')
+      expect(write.config.prompt).toContain(PLAN_FILE)
+      expect(write.config.prompt).toContain('{{idea}}')
+    }
+  })
+
+  it('ships runnable patterns, including the parallel tournament and Autopilot', () => {
     expect(unrunnableReasons(fromPattern(PATTERNS[0]))).toEqual([])
     expect(unrunnableReasons(fromPattern(PATTERNS[2]))).toEqual([])
     expect(unrunnableReasons(fromPattern(PATTERNS[3]))).toEqual([])
+    expect(unrunnableReasons(fromPattern(PATTERNS[4]))).toEqual([])
   })
 
   describe('parallel sections', () => {

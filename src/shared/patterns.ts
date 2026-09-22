@@ -276,6 +276,11 @@ const TOURNAMENT: Blueprint = {
   ]
 }
 
+/** Where the Floor's Autopilot switch reads and writes a project's plan. A
+ *  flow's own `plan` input can point anywhere - this is only the default a
+ *  fresh switch offers to create. */
+export const PLAN_FILE = 'PLAN.md'
+
 /** Brief for the builder: work the plan one item at a time, in whatever order
  *  makes sense, never all at once - each item becomes its own gated, landed
  *  branch before the next is even chosen. */
@@ -310,7 +315,7 @@ const AUTOPILOT: Blueprint = {
     'Works a plan one item at a time - build, test, merge, land - then asks an agent if the plan is fully done yet, and loops back if not. The loop cap (a retry cap on the last gate) is the safety net.',
   version: 1,
   defaultBudget: { maxUsd: 1 },
-  inputs: [{ name: 'plan', label: 'Plan file (a path in the repo, e.g. docs/PLAN.md)', required: true }],
+  inputs: [{ name: 'plan', label: `Plan file (a path in the repo, e.g. ${PLAN_FILE})`, required: true }],
   nodes: [
     trigger(),
     agent('build', 'Builder', AUTOPILOT_BUILD_PROMPT, 1, { worktree: true, edit: true, maxTokens: 600_000, maxUsd: 1 }),
@@ -340,6 +345,45 @@ const AUTOPILOT: Blueprint = {
 }
 
 export const PATTERNS: readonly Blueprint[] = [SUPERVISOR, LAND_PATTERN, PIPELINE, TOURNAMENT, AUTOPILOT]
+
+export const PLAN_FLOW = '__plan__'
+
+/**
+ * A one-agent flow that turns a rough idea into a detailed plan and saves it
+ * into the repository, so the Floor's Autopilot switch has something to
+ * point at. Writes directly to the live checkout (no worktree) - the same
+ * choice Supervisor already makes for an agent that is meant to touch the
+ * project broadly, and here the "broad" touch is exactly one new file.
+ */
+export function buildPlanBlueprint(): Blueprint {
+  const prompt = [
+    'Turn this idea into a detailed, actionable implementation plan, and save',
+    `it to ${PLAN_FILE} in the repository root using the Write tool (overwrite`,
+    'it if it already exists).',
+    '',
+    'Structure it as a numbered list of concrete, independently implementable',
+    'and testable items - each one small enough that a single agent could',
+    'build, test and land it in one pass. Order them so earlier items unblock',
+    'later ones. Be specific: name real files, commands and behaviour where you',
+    "can, not vague goals. If the idea is ambiguous, write down the assumption",
+    'you made rather than leaving it open.',
+    '',
+    'The idea:',
+    '{{idea}}',
+    '',
+    'When you are done, reply with a one-line confirmation only.'
+  ].join('\n')
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    name: 'Write a plan',
+    description: `Expands an idea into a detailed plan and saves it to ${PLAN_FILE}.`,
+    version: 1,
+    defaultBudget: { maxUsd: 1 },
+    inputs: [{ name: 'idea', label: 'The idea', required: true }],
+    nodes: [trigger(), agent('write', 'Planner', prompt, 1, { edit: true, maxTokens: 300_000, maxUsd: 1 })],
+    edges: [edge('start', 'write', 'control')]
+  }
+}
 
 
 /** A fresh copy the user can edit without touching the shipped one. */
