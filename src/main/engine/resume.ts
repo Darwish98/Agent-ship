@@ -1,13 +1,11 @@
 // Rebuilds the walker's state from a run's event log, so an interrupted run can
 // continue where it stopped instead of starting over. Pure: no git, no disk.
+import { repairFeedback } from '../../shared/gateParse'
 import { foldRun, isResumable, type RunEvent } from '../../shared/runs'
 import type { Blueprint, BlueprintNode } from '../../shared/schema'
 
 /** How long an interrupted run keeps its scratch worktree before the sweep reclaims it. */
 export const RESUME_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
-
-const TAIL = 6_000
-const tail = (s: string, n = TAIL): string => (s.length > n ? `…(truncated)\n${s.slice(-n)}` : s)
 
 /** The node a run continues to. A gate has separate pass and fail edges. */
 export function nextNode(bp: Blueprint, n: BlueprintNode, when: 'pass' | 'fail' | 'next'): BlueprintNode | undefined {
@@ -142,7 +140,10 @@ export function planResume(events: readonly RunEvent[], bp: Blueprint, projectPa
     } else if (e.type === 'gate.result') {
       if (inCopy) continue
       if (!e.pass) seed.fails.set(e.nodeId, (seed.fails.get(e.nodeId) ?? 0) + 1)
-      seed.feedback = e.pass ? '' : tail(e.detail)
+      // Same derivation the engine used when it built the original repair
+      // prompt (see runner.ts): a pure function of the stored detail, so a
+      // resumed run repeats it exactly rather than needing its own copy.
+      seed.feedback = e.pass ? '' : repairFeedback(e.detail)
       last = { kind: 'gate', node, pass: e.pass }
     }
   }
