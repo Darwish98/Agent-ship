@@ -96,6 +96,12 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
                     <strong>{g}</strong>: pauses for your approval
                   </li>
                 ))}
+                {summary.agentGates.map((g, i) => (
+                  <li key={`ag${i}`}>
+                    <strong>{g.label}</strong>: an agent judges whether to continue, up to <strong>{g.maxRetries}</strong> time
+                    {g.maxRetries === 1 ? '' : 's'} (its loop cap){g.maxUsd !== null ? `, at most ${formatUsd(g.maxUsd)} each time` : ''}
+                  </li>
+                ))}
                 <li>
                   Spends at most <strong>{summary.ceilingUsd !== null ? formatUsd(summary.ceilingUsd) : 'unbounded'}</strong>. The
                   CLI checks the limit after each model call, so a step may exceed it by one call.

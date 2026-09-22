@@ -91,6 +91,13 @@ describe('validation', () => {
     expect(messages(bp, 'error').some((m) => /no retry cap/.test(m))).toBe(true)
   })
 
+  it('accepts maxRetries: 0 as a real cap ("try exactly once"), not the same as no cap at all', () => {
+    const bp = fromPattern(PATTERNS[2])
+    const gate = bp.nodes.find((n) => n.id === 'tests')!
+    gate.budget = { maxRetries: 0 }
+    expect(messages(bp, 'error').some((m) => /no retry cap/.test(m))).toBe(false)
+  })
+
   it('flags nodes nothing can reach', () => {
     const bp = fromPattern(PATTERNS[0])
     bp.nodes.push({
@@ -236,8 +243,8 @@ describe('run planning helpers', () => {
     it('refuses a human gate inside the copies', () => {
       const bp = tournament()
       const gate = bp.nodes.find((n) => n.id === 'tests')!
-      if (gate.kind === 'gate') gate.config = { check: 'human', command: '', instructions: 'look' }
-      expect(why(bp)).toMatch(/human gates/)
+      if (gate.kind === 'gate') gate.config = { check: 'human', command: '', instructions: 'look', agentPrompt: '', agentModel: 'default', agentTools: [] }
+      expect(why(bp)).toMatch(/human or agent-checked gates/)
     })
 
     it('refuses nesting, and a merge inside the copies', () => {

@@ -119,7 +119,7 @@ export function buildLandBlueprint(o: LandOptions): Blueprint {
     label,
     position: at(col++),
     budget: { maxMinutes: 15 },
-    config: { check: 'command', command: tests, instructions: '' }
+    config: { check: 'command', command: tests, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
   })
 
   if (tests) add(gate('test', 'Test the branch'))
@@ -179,7 +179,7 @@ const PIPELINE: Blueprint = {
       label: 'Tests pass',
       position: at(3),
       budget: { maxRetries: 3 },
-      config: { check: 'command', command: 'npm test', instructions: '' }
+      config: { check: 'command', command: 'npm test', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
     agent(
       'review',
@@ -228,7 +228,7 @@ const TOURNAMENT: Blueprint = {
       label: 'Tests pass',
       position: at(3),
       budget: { maxRetries: 1 },
-      config: { check: 'command', command: 'npm test', instructions: '' }
+      config: { check: 'command', command: 'npm test', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
     {
       id: 'pick',
@@ -254,7 +254,7 @@ const TOURNAMENT: Blueprint = {
       kind: 'gate',
       label: 'Tests on the merge',
       position: at(6),
-      config: { check: 'command', command: 'npm test', instructions: '' }
+      config: { check: 'command', command: 'npm test', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
     {
       id: 'land',
@@ -276,7 +276,70 @@ const TOURNAMENT: Blueprint = {
   ]
 }
 
-export const PATTERNS: readonly Blueprint[] = [SUPERVISOR, LAND_PATTERN, PIPELINE, TOURNAMENT]
+/** Brief for the builder: work the plan one item at a time, in whatever order
+ *  makes sense, never all at once - each item becomes its own gated, landed
+ *  branch before the next is even chosen. */
+const AUTOPILOT_BUILD_PROMPT = [
+  'Read the plan at {{plan}}. Look at the current state of the repository',
+  '(recent commits, existing files) to see what has already been done.',
+  '',
+  'Implement the SINGLE next unfinished item from the plan - the smallest',
+  'coherent piece of work you can land on its own. Do not try to do',
+  'everything at once; a later pass will come back for the rest.',
+  '',
+  'When you are done, reply with a short summary of what you implemented and',
+  'which item of the plan it corresponds to.'
+].join('\n')
+
+/** Brief for the loop's own stopping condition: an honest, structured yes/no
+ *  the retry loop already built for gates is driven by. */
+const AUTOPILOT_CHECK_PROMPT = [
+  'Read the plan at {{plan}} and compare it against the current state of the',
+  'repository (recent commits, existing files, what the builder just said:',
+  '{{build.result}}).',
+  '',
+  'Has EVERY item in the plan now been fully implemented and landed? Do not',
+  'guess - look. Reply with JSON: {"done": boolean, "reason": "one or two',
+  'sentences saying what, if anything, is still missing"}.'
+].join('\n')
+
+const AUTOPILOT: Blueprint = {
+  schemaVersion: SCHEMA_VERSION,
+  name: 'Autopilot',
+  description:
+    'Works a plan one item at a time - build, test, merge, land - then asks an agent if the plan is fully done yet, and loops back if not. The loop cap (a retry cap on the last gate) is the safety net.',
+  version: 1,
+  defaultBudget: { maxUsd: 1 },
+  inputs: [{ name: 'plan', label: 'Plan file (a path in the repo, e.g. docs/PLAN.md)', required: true }],
+  nodes: [
+    trigger(),
+    agent('build', 'Builder', AUTOPILOT_BUILD_PROMPT, 1, { worktree: true, edit: true, maxTokens: 600_000, maxUsd: 1 }),
+    {
+      id: 'tests', kind: 'gate', label: 'Tests pass', position: at(2), budget: { maxRetries: 3 },
+      config: { check: 'command', command: 'npm test', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
+    },
+    { id: 'merge', kind: 'merge', label: 'Merge into main', position: at(3), budget: { maxUsd: 1 }, config: { baseBranch: 'main', resolveConflicts: true, resolverPrompt: RESOLVER_PROMPT } },
+    { id: 'land', kind: 'land', label: 'Land on main', position: at(4), config: { baseBranch: 'main' } },
+    {
+      // The loop primitive: this gate's `fail` edge is "not done yet, go
+      // around again"; its retry cap is the run's hard stop regardless of
+      // what the agent decides, so a confused judge can never run forever.
+      id: 'plancheck', kind: 'gate', label: 'Plan fully done?', position: at(5), budget: { maxRetries: 8, maxUsd: 0.3 },
+      config: { check: 'agent', command: '', instructions: '', agentPrompt: AUTOPILOT_CHECK_PROMPT, agentModel: 'default', agentTools: [] }
+    }
+  ],
+  edges: [
+    edge('start', 'build', 'control'),
+    edge('build', 'tests', 'branch'),
+    edge('tests', 'merge', 'verdict', 'pass'),
+    edge('tests', 'build', 'verdict', 'fail'),
+    edge('merge', 'land', 'branch'),
+    edge('land', 'plancheck', 'branch'),
+    edge('plancheck', 'build', 'verdict', 'fail')
+  ]
+}
+
+export const PATTERNS: readonly Blueprint[] = [SUPERVISOR, LAND_PATTERN, PIPELINE, TOURNAMENT, AUTOPILOT]
 
 
 /** A fresh copy the user can edit without touching the shipped one. */

@@ -242,11 +242,19 @@ export function validateBlueprint(bp: Blueprint): Problem[] {
         if (n.config.check === 'command' && !n.config.command.trim()) {
           add('error', `Gate "${nameOf(n)}" has no command to run.`, n.id)
         }
+        if (n.config.check === 'agent' && !n.config.agentPrompt.trim()) {
+          add('error', `Gate "${nameOf(n)}" has no question for the agent to judge.`, n.id)
+        }
+        if (n.config.check === 'agent' && !n.budget?.maxUsd && !bp.defaultBudget.maxUsd) {
+          add('warning', `"${nameOf(n)}" has no budget, and the flow has no default.`, n.id)
+        }
         const outs = outgoing(n.id)
         if (!outs.some((e) => e.condition !== 'fail')) {
           add('warning', `Gate "${nameOf(n)}" has no edge to follow when it passes.`, n.id)
         }
-        if (outs.some((e) => e.condition === 'fail') && !n.budget?.maxRetries) {
+        // maxRetries: 0 is a real, meaningful choice ("try exactly once, no
+        // looping") - only an ABSENT cap is the error, not a zero one.
+        if (outs.some((e) => e.condition === 'fail') && n.budget?.maxRetries === undefined) {
           add('error', `Gate "${nameOf(n)}" loops back on failure but has no retry cap.`, n.id)
         }
         break
@@ -333,7 +341,13 @@ function ceiling(bp: Blueprint, capOf: (n: BlueprintNode) => number | undefined)
   for (const n of bp.nodes) {
     // A merge step that may call an agent to resolve conflicts spends like one.
     // A "best" join calls a judge agent; that spends like any other agent.
-    const spends = n.kind === 'agent' || (n.kind === 'merge' && n.config.resolveConflicts) || (n.kind === 'join' && n.config.strategy === 'best')
+    // An agent-checked gate spends every time it is asked - including every
+    // pass through its own retry loop, already counted by the multiplier below.
+    const spends =
+      n.kind === 'agent' ||
+      (n.kind === 'merge' && n.config.resolveConflicts) ||
+      (n.kind === 'join' && n.config.strategy === 'best') ||
+      (n.kind === 'gate' && n.config.check === 'agent')
     if (!spends) continue
     const cap = capOf(n)
     if (!cap) return null
@@ -388,7 +402,7 @@ function parallelReasons(bp: Blueprint): string[] {
     for (const n of body) {
       const ok = n.kind === 'agent' || (n.kind === 'gate' && n.config.check === 'command')
       if (!ok) {
-        reasons.push(`"${nameOf(n)}" is inside a parallel section, where only agents and command gates can run (no ${n.kind === 'gate' ? 'human gates' : `${n.kind} nodes`}, no nesting).`)
+        reasons.push(`"${nameOf(n)}" is inside a parallel section, where only agents and command gates can run (no ${n.kind === 'gate' ? 'human or agent-checked gates' : `${n.kind} nodes`}, no nesting).`)
       }
     }
   }
@@ -485,7 +499,7 @@ export function makeNode(kind: NodeKind, id: string, position: { x: number; y: n
         kind,
         label: 'Gate',
         budget: { maxRetries: 3 },
-        config: { check: 'command', command: '', instructions: '' }
+        config: { check: 'command', command: '', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
       }
     case 'merge':
       return {
@@ -538,13 +552,16 @@ export interface RunSummary {
   agents: { label: string; model: string; edits: boolean; ownBranch: boolean; tools: string[] }[]
   commands: { label: string; command: string }[]
   humanGates: string[]
+  /** A loop's stopping condition: re-asked up to `maxRetries` times (the
+   *  loop's cap), each call held to `maxUsd`. */
+  agentGates: { label: string; maxRetries: number; maxUsd: number | null }[]
   ceilingUsd: number | null
 }
 
 /** What pressing Run would actually do, in plain terms. A blueprint is code
  *  that spends money and changes repos, so this is shown before it starts. */
 export function summarizeRun(bp: Blueprint): RunSummary {
-  const summary: RunSummary = { parallel: [], merges: [], lands: [], agents: [], commands: [], humanGates: [], ceilingUsd: usdCeiling(bp) }
+  const summary: RunSummary = { parallel: [], merges: [], lands: [], agents: [], commands: [], humanGates: [], agentGates: [], ceilingUsd: usdCeiling(bp) }
   for (const n of bp.nodes) {
     if (n.kind === 'agent') {
       summary.agents.push({
@@ -570,7 +587,9 @@ export function summarizeRun(bp: Blueprint): RunSummary {
       summary.lands.push({ label: n.label || 'Land', base: n.config.baseBranch })
     } else if (n.kind === 'gate') {
       if (n.config.check === 'command') summary.commands.push({ label: n.label || 'Gate', command: n.config.command })
-      else summary.humanGates.push(n.label || 'Gate')
+      else if (n.config.check === 'agent') {
+        summary.agentGates.push({ label: n.label || 'Gate', maxRetries: n.budget?.maxRetries ?? 0, maxUsd: n.budget?.maxUsd ?? bp.defaultBudget.maxUsd ?? null })
+      } else summary.humanGates.push(n.label || 'Gate')
     }
   }
   return summary

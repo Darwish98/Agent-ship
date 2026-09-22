@@ -53,7 +53,7 @@ export type RunEvent =
       nodeId: string
       attempt: number
       pass: boolean
-      by: 'command' | 'human'
+      by: 'command' | 'human' | 'agent'
       detail: string
     })
   | (Base & { type: 'run.finished'; status: Exclude<RunStatus, 'running' | 'awaiting'>; reason: string; branch?: string })

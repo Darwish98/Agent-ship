@@ -5,7 +5,8 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { foldRun, type RunEvent } from '../../shared/runs'
 import type { Blueprint } from '../../shared/schema'
-import { fromPattern, PATTERNS } from '../../shared/patterns'
+import { emptyBlueprint, fromPattern, PATTERNS } from '../../shared/patterns'
+import { usdCeiling } from '../../shared/blueprint'
 import { buildClaudeArgs, type AgentAdapter, type StepRequest, type StepResult } from './adapter'
 import { RunEngine } from './runner'
 import { RunStore } from './store'
@@ -247,7 +248,7 @@ describe('run engine', () => {
     const humanFlow = (retries: number): Blueprint => {
       const bp = pipeline(fileExists, retries)
       const gate = bp.nodes.find((n) => n.id === 'tests')!
-      if (gate.kind === 'gate') gate.config = { check: 'human', command: '', instructions: 'Look at it' }
+      if (gate.kind === 'gate') gate.config = { check: 'human', command: '', instructions: 'Look at it', agentPrompt: '', agentModel: 'default', agentTools: [] }
       return bp
     }
     const awaitingCount = (events: RunEvent[]): number => events.filter((e) => e.type === 'gate.awaiting').length
@@ -289,16 +290,138 @@ describe('run engine', () => {
     })
   })
 
+  describe('agent-checked gate (the loop primitive)', () => {
+    /** Builder -> Plan-check(agent) -[fail]-> back to Builder. No pass edge:
+     *  the flow simply ends once the check says done. */
+    function loopFlow(maxRetries: number, checkMaxUsd = 0.3): Blueprint {
+      const bp = emptyBlueprint('Loop test')
+      bp.defaultBudget = { maxUsd: 5 }
+      bp.nodes.push(
+        {
+          id: 'build', kind: 'agent', label: 'Builder', position: { x: 290, y: 0 }, budget: { maxUsd: 0.4 },
+          config: { role: 'Builder', model: 'default', prompt: 'Do the next thing.', worktree: false, access: 'edit', tools: [], outputSchema: '' }
+        },
+        {
+          id: 'check', kind: 'gate', label: 'Plan done?', position: { x: 580, y: 0 }, budget: { maxRetries, maxUsd: checkMaxUsd },
+          config: { check: 'agent', command: '', instructions: '', agentPrompt: 'Is the plan fully done?', agentModel: 'default', agentTools: [] }
+        }
+      )
+      bp.edges.push(
+        { id: 'a', from: 'start', to: 'build', type: 'control', condition: 'always' },
+        { id: 'b', from: 'build', to: 'check', type: 'artifact', condition: 'always' },
+        { id: 'c', from: 'check', to: 'build', type: 'verdict', condition: 'fail' }
+      )
+      return bp
+    }
+    const isCheck = (req: StepRequest): boolean => req.env.AGENT_SHIP_ROLE === 'Gate'
+
+    it('loops back to the builder while the agent says "not done", then finishes once it says done', async () => {
+      let n = 0
+      const fake = new Fake((req) => {
+        if (isCheck(req)) {
+          n++
+          return ok({ structured: { done: n >= 3, reason: n >= 3 ? 'all done' : `still missing part ${n}` } })
+        }
+        return ok({ result: `built pass ${n + 1}` })
+      })
+      const { engine, events } = harness(fake)
+      const r = await engine.start(args(loopFlow(5)))
+      if (!r.ok) throw new Error(r.error)
+      await engine.whenDone(r.runId)
+
+      const v = finalView(events)
+      expect(v.status).toBe('passed')
+      expect(v.reason).toBe('Finished every step.')
+      expect(v.nodes.check.attempts).toBe(3)
+      expect(v.nodes.build.attempts).toBe(3)
+      expect(fake.reqs.filter(isCheck)).toHaveLength(3)
+      expect(fake.reqs.filter(isCheck).every((q) => q.access === 'read')).toBe(true)
+      const gateResults = events.filter((e) => e.type === 'gate.result')
+      expect(gateResults.map((g) => g.type === 'gate.result' && g.pass)).toEqual([false, false, true])
+      expect(gateResults.every((g) => g.type === 'gate.result' && g.by === 'agent')).toBe(true)
+      expect(v.nodes.check.detail).toBe('all done')
+      // The failure reason fed back becomes the next repair prompt.
+      const secondBuild = fake.reqs.filter((q) => !isCheck(q))[1]
+      expect(secondBuild.prompt).toContain('still missing part 1')
+    })
+
+    it('stops once the loop cap is reached, saying so, if the agent never says done', async () => {
+      const fake = new Fake((req) => (isCheck(req) ? ok({ structured: { done: false, reason: 'nope' } }) : ok()))
+      const { engine, events } = harness(fake)
+      const r = await engine.start(args(loopFlow(2)))
+      if (!r.ok) throw new Error(r.error)
+      await engine.whenDone(r.runId)
+      const v = finalView(events)
+      expect(v.status).toBe('failed')
+      expect(v.reason).toBe('Gate "Plan done?" still failing after 3 attempts (retry cap 2).')
+    })
+
+    it('never treats a missing or malformed answer as "done" (fails safe, does not crash)', async () => {
+      const fake = new Fake((req) => (isCheck(req) ? ok({ structured: undefined, result: 'not the right shape' }) : ok()))
+      const { engine, events } = harness(fake)
+      const r = await engine.start(args(loopFlow(0)))
+      if (!r.ok) throw new Error(r.error)
+      await engine.whenDone(r.runId)
+      expect(finalView(events).status).toBe('failed')
+      const gr = events.find((e) => e.type === 'gate.result')
+      expect(gr?.type === 'gate.result' && gr.pass).toBe(false)
+    })
+
+    it('stops as "budget" when the check call itself hits its dollar limit, naming the gate', async () => {
+      const fake = new Fake((req) => (isCheck(req) ? { ...ok(), ok: false, budgetExhausted: true, error: 'over budget' } : ok()))
+      const { engine, events } = harness(fake)
+      const r = await engine.start(args(loopFlow(5)))
+      if (!r.ok) throw new Error(r.error)
+      await engine.whenDone(r.runId)
+      const v = finalView(events)
+      expect(v.status).toBe('budget')
+      expect(v.reason).toContain('Plan done?')
+    })
+
+    it('never calls the agent to check when the run is already out of budget', async () => {
+      const bp = loopFlow(5, 0.05)
+      const ceiling = usdCeiling(bp)!
+      // The builder's one call is made to (almost) exhaust the whole run's ceiling.
+      const fake = new Fake((req) => (isCheck(req) ? ok({ structured: { done: true, reason: 'x' } }) : ok({ costUsd: ceiling - 0.01 })))
+      const { engine, events } = harness(fake)
+      const r = await engine.start(args(bp))
+      if (!r.ok) throw new Error(r.error)
+      await engine.whenDone(r.runId)
+      const v = finalView(events)
+      expect(v.status).toBe('budget')
+      expect(fake.reqs.some(isCheck)).toBe(false) // the builder alone used up the ceiling; the check was never asked
+    })
+
+    it('stops on cancellation the same as any other step', async () => {
+      let release = (): void => undefined
+      const fake = new Fake(
+        (req) =>
+          new Promise<StepResult>((resolve) => {
+            if (!isCheck(req)) return resolve(ok())
+            release = () => resolve({ ...ok(), ok: false, cancelled: true, error: 'Cancelled.' })
+          })
+      )
+      const { engine, events } = harness(fake)
+      const r = await engine.start(args(loopFlow(5)))
+      if (!r.ok) throw new Error(r.error)
+      await new Promise((res) => setTimeout(res, 300))
+      expect(engine.cancel(r.runId)).toBe(true)
+      release()
+      await engine.whenDone(r.runId)
+      expect(finalView(events).status).toBe('cancelled')
+    })
+  })
+
   it('rejects flows the engine cannot run, before spending anything', async () => {
     const fake = new Fake(() => ok())
     const { engine } = harness(fake)
     // A tournament whose copies would wait on a human: parallel copies cannot.
     const bp = fromPattern(PATTERNS[3])
     const gate = bp.nodes.find((n) => n.id === 'tests')!
-    if (gate.kind === 'gate') gate.config = { check: 'human', command: '', instructions: 'look' }
+    if (gate.kind === 'gate') gate.config = { check: 'human', command: '', instructions: 'look', agentPrompt: '', agentModel: 'default', agentTools: [] }
     const r = await engine.start(args(bp))
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.error).toMatch(/human gates/)
+    if (!r.ok) expect(r.error).toMatch(/human or agent-checked gates/)
     expect(fake.reqs).toHaveLength(0)
   })
 

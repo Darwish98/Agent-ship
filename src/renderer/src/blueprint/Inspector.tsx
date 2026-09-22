@@ -226,33 +226,58 @@ function NodeFields({ node, onNode }: { node: BlueprintNode; onNode: Props['onNo
     }
     case 'gate': {
       const c = node.config
+      const set = (patch: Partial<typeof c>, f: string): void => onNode({ ...node, config: { ...c, ...patch } }, key(f))
       return (
         <>
           <Field label="Check">
-            <select
-              value={c.check}
-              onChange={(e) => onNode({ ...node, config: { ...c, check: e.target.value as typeof c.check } }, key('check'))}
-            >
+            <select value={c.check} onChange={(e) => set({ check: e.target.value as typeof c.check }, 'check')}>
               <option value="command">a command exits 0</option>
               <option value="human">a person approves</option>
+              <option value="agent">an agent judges</option>
             </select>
           </Field>
-          {c.check === 'command' ? (
+          {c.check === 'command' && (
             <Field label="Command" hint="Run in the upstream branch's worktree.">
-              <input
-                value={c.command}
-                placeholder="npm test"
-                onChange={(e) => onNode({ ...node, config: { ...c, command: e.target.value } }, key('cmd'))}
-              />
+              <input value={c.command} placeholder="npm test" onChange={(e) => set({ command: e.target.value }, 'cmd')} />
             </Field>
-          ) : (
+          )}
+          {c.check === 'human' && (
             <Field label="What to check">
-              <textarea
-                rows={3}
-                value={c.instructions}
-                onChange={(e) => onNode({ ...node, config: { ...c, instructions: e.target.value } }, key('ins'))}
-              />
+              <textarea rows={3} value={c.instructions} onChange={(e) => set({ instructions: e.target.value }, 'ins')} />
             </Field>
+          )}
+          {c.check === 'agent' && (
+            <>
+              <p className="insp-note">
+                The loop primitive: a fail edge back to an earlier node makes this &quot;keep working until X&quot;, with the retry cap below as how many
+                times it may go around.
+              </p>
+              <Field
+                label="What to judge"
+                hint={`Reply must include a boolean. Variables: ${BUILTIN_VARS.map((v) => `{{${v}}}`).join(' ')}, a flow input, or an earlier node: {{node-id.result}}. Read/Glob/Grep are always available to look at the repo itself.`}
+              >
+                <textarea
+                  rows={5}
+                  placeholder={'e.g. Read the plan at {{plan}} and the repo\'s current state. Is every item done? Reply {"done": true|false, "reason": "..."}.'}
+                  value={c.agentPrompt}
+                  onChange={(e) => set({ agentPrompt: e.target.value }, 'agentPrompt')}
+                />
+              </Field>
+              <Field label="Model">
+                <select value={c.agentModel} onChange={(e) => set({ agentModel: e.target.value as typeof c.agentModel }, 'agentModel')}>
+                  {['default', 'opus', 'sonnet', 'haiku', 'fable'].map((m) => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Extra allowed tools" hint="One per line, e.g. Bash(git log *). Read-only; it can never edit files.">
+                <textarea
+                  rows={2}
+                  value={c.agentTools.join('\n')}
+                  onChange={(e) => set({ agentTools: e.target.value.split('\n').filter((t) => t.trim()) }, 'agentTools')}
+                />
+              </Field>
+            </>
           )}
           <p className="insp-note">
             Connect two edges out of a gate: one for <b>pass</b>, one for <b>fail</b> (a retry loop).
