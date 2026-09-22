@@ -27,7 +27,7 @@ export interface StepResult {
   structured?: unknown
   costUsd: number
   /** Billed tokens: input + output + cache writes. Cache reads are excluded,
-   *  matching how the weekly fuel gauge counts. */
+   *  matching how the weekly Usage gauge counts. */
   tokens: number
   sessionId: string
   error?: string

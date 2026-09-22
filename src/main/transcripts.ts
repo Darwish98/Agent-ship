@@ -222,7 +222,7 @@ export function listSessions(limit = 60): SessionSummary[] {
 
 /**
  * Trailing-7-day billed token total across every local transcript - the
- * "fuel" reading. This is local volume only: Claude Code does not record the
+ * Usage gauge's reading. This is local volume only: Claude Code does not record the
  * account's actual plan limit anywhere on disk, so the percentage shown in
  * the UI is against a budget the user sets, not a real quota.
  */

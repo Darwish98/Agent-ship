@@ -301,6 +301,12 @@
   color: var(--text-muted);
 }
 
+.fl-land-all {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 11px;
+}
+
 .fl-cards {
   flex: 1 1 auto;
   display: flex;
@@ -790,6 +796,74 @@
   background: var(--surface-alt);
   border-top: 1px solid var(--border);
   border-radius: 0 0 9px 9px;
+}
+
+/* --- Land all ------------------------------------------------------------- */
+
+.la-rows {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.la-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.la-row + .la-row {
+  border-top: 1px solid var(--border);
+}
+
+.la-row-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.la-row-project {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.la-row-state {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.la-row-detail {
+  flex-basis: 100%;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.la-row-passed .rd-glyph {
+  color: var(--ok);
+}
+
+.la-row-failed .rd-glyph,
+.la-row-plan-failed .rd-glyph,
+.la-row-start-failed .rd-glyph,
+.la-row-budget .rd-glyph,
+.la-row-cancelled .rd-glyph,
+.la-row-interrupted .rd-glyph {
+  color: var(--low);
+}
+
+.la-row-running .rd-glyph,
+.la-row-starting .rd-glyph {
+  color: var(--accent);
 }
 
 .rd-gate-failures {

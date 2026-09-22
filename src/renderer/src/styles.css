@@ -97,9 +97,9 @@ body,
   background: var(--accent-hover);
 }
 
-/* --- fuel ------------------------------------------------------------- */
+/* --- usage (local token volume vs. a self-set budget, not a real quota) - */
 
-.fuel {
+.usage {
   -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
@@ -108,12 +108,12 @@ body,
   border-left: 1px solid var(--border);
 }
 
-.fuel-label {
+.usage-label {
   font-weight: 700;
   color: var(--text);
 }
 
-.fuel-track {
+.usage-track {
   width: 92px;
   height: 9px;
   border-radius: 5px;
@@ -122,22 +122,22 @@ body,
   overflow: hidden;
 }
 
-.fuel-fill {
+.usage-fill {
   height: 100%;
   transition: width 0.4s ease;
 }
 
-.fuel-ok .fuel-fill {
+.usage-ok .usage-fill {
   background: var(--ok);
 }
-.fuel-warn .fuel-fill {
+.usage-warn .usage-fill {
   background: var(--warn);
 }
-.fuel-low .fuel-fill {
+.usage-low .usage-fill {
   background: var(--low);
 }
 
-.fuel-value {
+.usage-value {
   font-family: var(--font-mono);
   font-size: 11px;
   display: flex;
@@ -145,7 +145,7 @@ body,
   gap: 4px;
 }
 
-.fuel-budget {
+.usage-budget {
   background: none;
   border: none;
   border-bottom: 1px dashed var(--border-strong);
@@ -155,7 +155,7 @@ body,
   padding: 0;
 }
 
-.fuel-input {
+.usage-input {
   width: 62px;
   font: inherit;
   border: 1px solid var(--accent);
@@ -164,7 +164,7 @@ body,
   background: var(--surface);
 }
 
-.fuel-est {
+.usage-est {
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.04em;

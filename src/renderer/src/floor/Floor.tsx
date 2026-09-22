@@ -3,7 +3,7 @@ import { LANES, type Lane, type WorkItem } from '../../../shared/floor'
 import { slugify } from '../../../shared/blueprint'
 import { fromPattern, PATTERNS } from '../../../shared/patterns'
 import { formatUsd } from '../../../shared/runs'
-import { FuelGauge } from '../components/FuelGauge'
+import { UsageGauge } from '../components/UsageGauge'
 import { TaskDialog, type TaskDialogSpec } from '../components/TaskDialog'
 import { useNav } from '../nav'
 import { useRuns } from '../runs/RunsProvider'
@@ -11,6 +11,7 @@ import type { Room } from '../types'
 import { WorkCard, type FloorActions } from './Cards'
 import { CommitLandDialog, type CommitLandTarget } from './CommitLandDialog'
 import { Drawer } from './Drawer'
+import { LandAllDialog, type LandAllItem } from './LandAllDialog'
 import { LandDialog, type LandTarget } from './LandDialog'
 import { useFloorData } from './useFloorData'
 
@@ -38,6 +39,7 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
   const [launchOpen, setLaunchOpen] = useState<string | null>(null)
   const [landing, setLanding] = useState<LandTarget | null>(null)
   const [committing, setCommitting] = useState<CommitLandTarget | null>(null)
+  const [landingAll, setLandingAll] = useState<LandAllItem[] | null>(null)
 
   const roomById = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms])
   const visible = useCallback((it: WorkItem): boolean => project === 'all' || it.projectId === project, [project])
@@ -49,6 +51,36 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
   }, [model, visible])
 
   const selected = useMemo(() => model.items.find((i) => i.id === selectedId) ?? null, [model, selectedId])
+
+  /** What "Land all" would land: every landable item currently shown, in the
+   *  same order as the lane. A discovered-but-unregistered project needs a
+   *  one-off "+ Add to Agent Ship" first, so it is left out of the batch. */
+  const landAllTargets = useCallback(
+    (visibleReady: WorkItem[]): LandAllItem[] =>
+      visibleReady.flatMap((item): LandAllItem[] => {
+        const room = roomById.get(item.projectId)
+        if (!room || room.ephemeral) return []
+        if (item.kind === 'branch' && item.branch) {
+          return [{ key: item.id, projectId: item.projectId, projectName: room.name, kind: 'branch', title: item.branch.branch, branch: item.branch.branch }]
+        }
+        if (item.kind === 'session' && item.session) {
+          return [
+            {
+              key: item.id,
+              projectId: item.projectId,
+              projectName: room.name,
+              kind: 'session',
+              title: item.session.name,
+              cwd: item.session.cwd,
+              sessionId: item.session.sessionId,
+              sessionName: item.session.name
+            }
+          ]
+        }
+        return []
+      }),
+    [roomById]
+  )
 
   // --- actions -----------------------------------------------------------------
 
@@ -208,7 +240,7 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
             <strong>{formatUsd(model.spendTodayUsd)}</strong> flows today
           </span>
         </div>
-        <FuelGauge weeklyTokens={world.weeklyTokens} budget={world.settings.weeklyTokenBudget} onBudgetChange={(b) => void world.setBudget(b)} />
+        <UsageGauge weeklyTokens={world.weeklyTokens} budget={world.settings.weeklyTokenBudget} onBudgetChange={(b) => void world.setBudget(b)} />
         <button
           type="button"
           className="btn btn-primary"
@@ -332,6 +364,11 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
                     <header className="fl-lane-head">
                       <h2>{meta.title}</h2>
                       <span className="fl-count">{all.length}</span>
+                      {lane === 'ready' && list.length >= 2 && (
+                        <button type="button" className="btn btn-primary fl-land-all" onClick={() => setLandingAll(landAllTargets(list))}>
+                          Land all {list.length}
+                        </button>
+                      )}
                       <span className="fl-lane-blurb">{meta.blurb}</span>
                     </header>
                     <div className="fl-cards">
@@ -385,6 +422,7 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
       {dialog && <TaskDialog spec={dialog} onClose={() => setDialog(null)} />}
       {landing && <LandDialog target={landing} onClose={() => setLanding(null)} />}
       {committing && <CommitLandDialog target={committing} onClose={() => setCommitting(null)} />}
+      {landingAll && <LandAllDialog items={landingAll} onClose={() => setLandingAll(null)} />}
     </div>
   )
 }

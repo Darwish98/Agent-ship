@@ -11,7 +11,7 @@ export interface Project {
 }
 
 export interface Settings {
-  /** Weekly token budget the fuel gauge is measured against. This is a
+  /** Weekly token budget the Usage gauge is measured against. This is a
    *  user-chosen number, not a reading of the account's real plan limit -
    *  Claude Code doesn't record that anywhere locally. */
   weeklyTokenBudget: number
