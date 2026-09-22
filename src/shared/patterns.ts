@@ -355,32 +355,58 @@ export const PLAN_FLOW = '__plan__'
  * choice Supervisor already makes for an agent that is meant to touch the
  * project broadly, and here the "broad" touch is exactly one new file.
  */
+/** Where a generated project's fuller planning docs live - the same two-tier
+ *  shape this project's own docs use (a narrative overview and a focused
+ *  design doc), under a generically-named folder since "PLATFORM_PLAN" and
+ *  "FLOOR_DESIGN" are this project's own names, not a convention every
+ *  project should share. */
+export const PLANNING_DIR = 'planning'
+export const OVERVIEW_FILE = `${PLANNING_DIR}/OVERVIEW.md`
+export const DESIGN_FILE = `${PLANNING_DIR}/DESIGN.md`
+
 export function buildPlanBlueprint(): Blueprint {
   const prompt = [
-    'Turn this idea into a detailed, actionable implementation plan, and save',
-    `it to ${PLAN_FILE} in the repository root using the Write tool (overwrite`,
-    'it if it already exists).',
+    `First, check whether ${PLANNING_DIR}/ already holds real planning documents`,
+    `(Glob for ${PLANNING_DIR}/*.md and read what is there). If it does, read them`,
+    `and write ${PLAN_FILE} as a distilled, actionable summary of what they already`,
+    "say - do not overwrite or contradict them, and do not invent a new idea when",
+    'one is already recorded.',
     '',
-    'Structure it as a numbered list of concrete, independently implementable',
-    'and testable items - each one small enough that a single agent could',
-    'build, test and land it in one pass. Order them so earlier items unblock',
-    'later ones. Be specific: name real files, commands and behaviour where you',
-    "can, not vague goals. If the idea is ambiguous, write down the assumption",
-    'you made rather than leaving it open.',
+    `Otherwise, this is a new project with nothing written down yet. From the idea`,
+    'below, create THREE files:',
+    '',
+    `1. ${OVERVIEW_FILE} - the fuller plan: what the idea is, its goals, and a`,
+    '   phased roadmap. This is the record of *why*, for a person to read.',
+    `2. ${DESIGN_FILE} - a more detailed design for the core mechanism: how the`,
+    '   main pieces fit together, the key decisions and trade-offs, and honest',
+    '   open questions. Keep it proportional to the idea - a small idea gets a',
+    '   short design doc, not padding. Skip this file only if the idea is truly',
+    '   too small to have a "design" (e.g. a single script).',
+    `3. ${PLAN_FILE} in the repository root (using the Write tool; this is the`,
+    '   file that gets worked from, one item at a time) - a numbered list of',
+    '   concrete, independently implementable and testable items, each small',
+    '   enough that a single agent could build, test and land it in one pass.',
+    '   Order them so earlier items unblock later ones. Be specific: name real',
+    '   files, commands and behaviour where you can, not vague goals. Link back',
+    `   to ${OVERVIEW_FILE} (and ${DESIGN_FILE} if you wrote one) for the`,
+    '   reasoning, the way this rule you are following right now does.',
+    '',
+    "If the idea is ambiguous, write down the assumption you made in the",
+    'overview rather than leaving it open.',
     '',
     'The idea:',
     '{{idea}}',
     '',
-    'When you are done, reply with a one-line confirmation only.'
+    'When you are done, reply with a one-line confirmation of which files you wrote.'
   ].join('\n')
   return {
     schemaVersion: SCHEMA_VERSION,
     name: 'Write a plan',
-    description: `Expands an idea into a detailed plan and saves it to ${PLAN_FILE}.`,
+    description: `Expands an idea into a plan (or summarises one that already exists) and saves it to ${PLAN_FILE}.`,
     version: 1,
-    defaultBudget: { maxUsd: 1 },
+    defaultBudget: { maxUsd: 2 },
     inputs: [{ name: 'idea', label: 'The idea', required: true }],
-    nodes: [trigger(), agent('write', 'Planner', prompt, 1, { edit: true, maxTokens: 300_000, maxUsd: 1 })],
+    nodes: [trigger(), agent('write', 'Planner', prompt, 1, { edit: true, maxTokens: 600_000, maxUsd: 2 })],
     edges: [edge('start', 'write', 'control')]
   }
 }

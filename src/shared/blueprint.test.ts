@@ -11,7 +11,7 @@ import {
   usdCeiling,
   validateBlueprint
 } from './blueprint'
-import { buildPlanBlueprint, emptyBlueprint, fromPattern, PATTERNS, PLAN_FILE } from './patterns'
+import { buildPlanBlueprint, DESIGN_FILE, emptyBlueprint, fromPattern, OVERVIEW_FILE, PATTERNS, PLAN_FILE, PLANNING_DIR } from './patterns'
 import { promptVars } from './runs'
 import { parseBlueprint, type Blueprint } from './schema'
 
@@ -232,8 +232,19 @@ describe('run planning helpers', () => {
     if (write.kind === 'agent') {
       expect(write.config.worktree).toBe(false) // the plan belongs in the real checkout, not a throwaway branch
       expect(write.config.access).toBe('edit')
-      expect(write.config.prompt).toContain(PLAN_FILE)
       expect(write.config.prompt).toContain('{{idea}}')
+      // For a genuinely new project: the actionable list, and the fuller
+      // record behind it, generically named (not this project's own
+      // PLATFORM_PLAN/FLOOR_DESIGN, which are agent-ship's own names).
+      expect(write.config.prompt).toContain(PLAN_FILE)
+      expect(write.config.prompt).toContain(OVERVIEW_FILE)
+      expect(write.config.prompt).toContain(DESIGN_FILE)
+      expect(OVERVIEW_FILE.startsWith(`${PLANNING_DIR}/`)).toBe(true)
+      expect(DESIGN_FILE.startsWith(`${PLANNING_DIR}/`)).toBe(true)
+      // For a project that already has real planning docs: read and
+      // summarise them, never blindly overwrite what is already decided.
+      expect(write.config.prompt).toMatch(/already holds real planning documents/)
+      expect(write.config.prompt).toMatch(/do not overwrite or contradict/)
     }
   })
 

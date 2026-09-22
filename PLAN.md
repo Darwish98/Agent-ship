@@ -2,9 +2,9 @@
 
 This is the working plan Autopilot (the Floor switch) builds from. It is a
 distilled, actionable TODO list, not the project's full record — that lives
-in [`docs/PLATFORM_PLAN.md`](docs/PLATFORM_PLAN.md) (market analysis,
+in [`planning/PLATFORM_PLAN.md`](planning/PLATFORM_PLAN.md) (market analysis,
 architecture, every phase's design decisions, the honest evaluation) and
-[`docs/FLOOR_DESIGN.md`](docs/FLOOR_DESIGN.md) (the Floor UI). Read those for
+[`planning/FLOOR_DESIGN.md`](planning/FLOOR_DESIGN.md) (the Floor UI). Read those for
 *why*; this file is *what's left*, in build order.
 
 **Already built and working, for context (do not redo):** the blueprint
@@ -14,7 +14,7 @@ sweep; Merge and Land nodes; parallel fan-out/join with `all` / `first` /
 runner output; the agent-checked gate loop primitive and the shipped
 Autopilot pattern itself; Land all; the Usage gauge; the Floor's Autopilot
 switch and this plan-setup flow. Full detail and honest caveats for every one
-of these are in `docs/PLATFORM_PLAN.md` §7 and §13.
+of these are in `planning/PLATFORM_PLAN.md` §7 and §13.
 
 ## Items
 
@@ -74,7 +74,7 @@ of these are in `docs/PLATFORM_PLAN.md` §7 and §13.
 8. **Export a blueprint to a Claude Code dynamic-workflow script**, and
    import a simple one back. Lets a blueprint remain useful even where Agent
    Ship itself isn't installed, and is the hedge noted in
-   `docs/PLATFORM_PLAN.md` §9 against Claude Code absorbing this feature.
+   `planning/PLATFORM_PLAN.md` §9 against Claude Code absorbing this feature.
 
 9. **An MCP server** exposing "run flow / list runs / approve a gate" to
    other agents or Claude Desktop, so a flow can be started or a human gate
@@ -113,7 +113,7 @@ These need a person, not a build/test/land cycle, so Autopilot should leave
 them alone even if it notices them:
 
 - Running the app on real work repeatedly to see what actually breaks
-  (`docs/PLATFORM_PLAN.md` §11.1) - needs a human picking real tasks and
+  (`planning/PLATFORM_PLAN.md` §11.1) - needs a human picking real tasks and
   judging the results, not something to automate here.
 - The competitor teardown (§11.2): Claude Code's own agent view/workflows,
   Superset, Claude Squad, Vibe Kanban.

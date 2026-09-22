@@ -1,6 +1,6 @@
 // The Floor's brain. Pure: plain data in, ranked work items out, so the rules
 // for "what needs a human" can be tested without a window. See
-// docs/FLOOR_DESIGN.md for why work is organised into these four lanes.
+// planning/FLOOR_DESIGN.md for why work is organised into these four lanes.
 import { LAND_FLOW } from './patterns'
 import { isActive, type NodeState, type RunView } from './runs'
 

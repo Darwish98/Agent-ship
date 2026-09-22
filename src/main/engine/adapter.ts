@@ -43,7 +43,7 @@ export interface AgentAdapter {
 const READ_TOOLS = ['Read', 'Glob', 'Grep']
 
 /** Exported for tests: the exact CLI surface the engine relies on (see
- *  docs/spikes/claude-cli.md). The prompt itself goes over stdin, never argv. */
+ *  planning/spikes/claude-cli.md). The prompt itself goes over stdin, never argv. */
 export function buildClaudeArgs(req: StepRequest): string[] {
   const args = ['-p', '--output-format', 'json']
   args.push(req.resume ? '--resume' : '--session-id', req.sessionId)

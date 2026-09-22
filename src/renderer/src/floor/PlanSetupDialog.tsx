@@ -1,5 +1,5 @@
 import { useEffect, useState, type JSX } from 'react'
-import { PLAN_FILE } from '../../../shared/patterns'
+import { PLAN_FILE, PLANNING_DIR } from '../../../shared/patterns'
 import type { RunEvent } from '../../../shared/runs'
 
 export interface PlanSetupTarget {
@@ -103,8 +103,9 @@ export function PlanSetupDialog({ target, onClose, onReady }: { target: PlanSetu
         {tab === 'idea' ? (
           <>
             <p className="rd-note">
-              An agent reads this and writes a detailed, numbered plan to <code>{PLAN_FILE}</code> - independently gated, landable items, in order. It is a
-              normal run: capped at $1, visible on the Floor while it works.
+              An agent expands this into <code>{PLAN_FILE}</code> - independently gated, landable items, in order. For a new project it also writes the
+              fuller record behind it, in <code>{PLANNING_DIR}/</code> (an overview and a design doc). It is a normal run: capped at $2, visible on the
+              Floor while it works.
             </p>
             <label className="modal-field">
               The idea
