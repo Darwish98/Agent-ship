@@ -76,23 +76,24 @@ export function CommitLandDialog({ target, onClose }: { target: CommitLandTarget
                   </li>
                 )}
                 <li>
-                  <strong>Test</strong>
-                  {tests ? (
-                    <>
-                      {' '}
-                      by running <code>{tests}</code> in a scratch copy.
-                    </>
-                  ) : (
-                    ' is skipped: no test command is set.'
-                  )}
-                </li>
-                <li>
                   <strong>Merge</strong> into a scratch copy of <code>{plan.baseBranch}</code>
                   {resolve ? '; an agent resolves conflicts if there are any (up to $1).' : '; if it conflicts, landing stops.'}
                 </li>
                 <li>
                   <strong>Test the merged result</strong>
-                  {tests ? '.' : ' is skipped.'}
+                  {tests ? (
+                    <>
+                      {' '}
+                      by running <code>{tests}</code> there, once.
+                    </>
+                  ) : (
+                    ' is skipped: no test command is set.'
+                  )}
+                  {tests && resolve
+                    ? ' If it fails, an agent works out whether the code or an out-of-date test is wrong, fixes it in the scratch copy, and it is tested again (up to 2 repairs, up to $1 each).'
+                    : tests
+                      ? ' If it fails, landing stops and nothing changes.'
+                      : ''}
                 </li>
                 <li>
                   <strong>Land</strong>: only now does <code>{plan.baseBranch}</code> move.{' '}
@@ -124,7 +125,7 @@ export function CommitLandDialog({ target, onClose }: { target: CommitLandTarget
 
             <label className="insp-check ld-check">
               <input type="checkbox" checked={resolve} onChange={(e) => setResolve(e.target.checked)} />
-              Let an agent resolve merge conflicts
+              Let an agent resolve merge conflicts and repair failing tests
             </label>
           </>
         )}

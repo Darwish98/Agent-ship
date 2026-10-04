@@ -155,7 +155,7 @@ export function LandAllDialog({ items, onClose }: { items: LandAllItem[]; onClos
       <div className="modal-box rdlg">
         <h3>Land all</h3>
         <div className="modal-subtitle">
-          {items.length} branch{items.length === 1 ? '' : 'es'}, one at a time. Each is tested, merged into a scratch copy of its base, re-tested, then landed -
+          {items.length} branch{items.length === 1 ? '' : 'es'}, one at a time. Each is tested, merged into a scratch copy of its base, re-tested (an agent repairs a failing merge, up to a cap), then landed -
           the same as landing it by hand.
         </div>
 

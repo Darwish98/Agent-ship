@@ -33,7 +33,7 @@ beforeAll(() => {
 })
 
 afterAll(() => {
-  if (root) fs.rmSync(root, { recursive: true, force: true })
+  if (root) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 function flow(): Blueprint {

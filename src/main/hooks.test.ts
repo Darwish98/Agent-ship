@@ -20,7 +20,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.unstubAllEnvs()
-  fs.rmSync(home, { recursive: true, force: true })
+  fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 const require_ = createRequire(import.meta.url)

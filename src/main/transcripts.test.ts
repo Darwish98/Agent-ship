@@ -13,7 +13,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.unstubAllEnvs()
-  fs.rmSync(home, { recursive: true, force: true })
+  fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 async function load(): Promise<typeof import('./transcripts')> {
@@ -127,6 +127,80 @@ describe('weeklyUsage', () => {
     fs.writeFileSync(path.join(dir, 's1.jsonl'), noId)
     const t = await load()
     expect(t.weeklyUsage().weeklyTokens).toBe(12)
+  })
+
+  describe('polling (every minute): only what was appended is read again', () => {
+    const bytesRead = (spy: { mock: { results: { value: unknown }[] } }): number => spy.mock.results.reduce((n, r) => n + (typeof r.value === 'number' ? r.value : 0), 0)
+
+    it('picks up lines appended between polls, reading only the new bytes', async () => {
+      const dir = projectDir()
+      const file = path.join(dir, 's1.jsonl')
+      fs.writeFileSync(file, `${callLines('msg_A', { input_tokens: 100 }, 1, now())}
+`)
+      const t = await load()
+      expect(t.weeklyUsage().weeklyTokens).toBe(100)
+
+      const added = `${callLines('msg_B', { input_tokens: 5 }, 1, now())}
+`
+      fs.appendFileSync(file, added)
+      const spy = vi.spyOn(fs, 'readSync')
+      expect(t.weeklyUsage().weeklyTokens).toBe(105)
+      expect(bytesRead(spy)).toBe(Buffer.byteLength(added)) // not the whole file again
+      spy.mockRestore()
+    })
+
+    it('reads nothing at all when a file has not grown', async () => {
+      const dir = projectDir()
+      fs.writeFileSync(path.join(dir, 's1.jsonl'), `${callLines('msg_A', { input_tokens: 7 }, 1, now())}
+`)
+      const t = await load()
+      t.weeklyUsage()
+      const spy = vi.spyOn(fs, 'readSync')
+      expect(t.weeklyUsage().weeklyTokens).toBe(7)
+      expect(spy).not.toHaveBeenCalled()
+      spy.mockRestore()
+    })
+
+    it('leaves a half-written last line for the next poll instead of dropping or double-counting it', async () => {
+      const dir = projectDir()
+      const file = path.join(dir, 's1.jsonl')
+      const second = callLines('msg_B', { input_tokens: 5 }, 1, now())
+      fs.writeFileSync(file, `${callLines('msg_A', { input_tokens: 100 }, 1, now())}
+${second.slice(0, 20)}`)
+      const t = await load()
+      expect(t.weeklyUsage().weeklyTokens).toBe(100) // the partial line is not a call yet
+      fs.appendFileSync(file, `${second.slice(20)}
+`)
+      expect(t.weeklyUsage().weeklyTokens).toBe(105)
+      expect(t.weeklyUsage().weeklyTokens).toBe(105) // and a further poll does not count it again
+    })
+
+    it('counts one call once even when its content blocks arrive in different polls', async () => {
+      const dir = projectDir()
+      const file = path.join(dir, 's1.jsonl')
+      fs.writeFileSync(file, `${callLines('msg_A', { input_tokens: 10 }, 1, now())}
+`)
+      const t = await load()
+      expect(t.weeklyUsage().weeklyTokens).toBe(10)
+      fs.appendFileSync(file, `${callLines('msg_A', { input_tokens: 10 }, 2, now())}
+`) // more blocks of the same call
+      expect(t.weeklyUsage().weeklyTokens).toBe(10)
+    })
+
+    it('starts over for a file that was rewritten shorter, and forgets files that are gone', async () => {
+      const dir = projectDir()
+      const file = path.join(dir, 's1.jsonl')
+      fs.writeFileSync(file, `${callLines('msg_A', { input_tokens: 100 }, 1, now())}
+${callLines('msg_B', { input_tokens: 100 }, 1, now())}
+`)
+      const t = await load()
+      expect(t.weeklyUsage().weeklyTokens).toBe(200)
+      fs.writeFileSync(file, `${callLines('msg_C', { input_tokens: 3 }, 1, now())}
+`)
+      expect(t.weeklyUsage().weeklyTokens).toBe(3)
+      fs.rmSync(file)
+      expect(t.weeklyUsage().weeklyTokens).toBe(0)
+    })
   })
 
   it('is 0 when nothing has run, and when ~/.claude/projects does not exist at all', async () => {

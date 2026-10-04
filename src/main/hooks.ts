@@ -95,29 +95,6 @@ export function mergeHooks(settings: Settings, command: string): boolean {
   return changed
 }
 
-/** Removes every Agent Ship hook and nothing else. Returns whether anything changed. */
-export function stripHooks(settings: Settings): boolean {
-  if (!settings.hooks) return false
-  let changed = false
-  for (const eventName of Object.keys(settings.hooks)) {
-    const list = settings.hooks[eventName]
-    if (!Array.isArray(list)) continue
-    const next: HookEntry[] = []
-    for (const entry of list) {
-      const hooks = Array.isArray(entry.hooks) ? entry.hooks : []
-      const rest = hooks.filter((h) => !isOurs(h))
-      if (rest.length === hooks.length) next.push(entry)
-      else {
-        changed = true
-        if (rest.length > 0) next.push({ ...entry, hooks: rest })
-      }
-    }
-    if (next.length === 0) delete settings.hooks[eventName]
-    else settings.hooks[eventName] = next
-  }
-  return changed
-}
-
 /** Temp file in the same directory, then rename: a crash leaves the old file or the new one, never half. */
 export function writeSettings(settings: Settings): void {
   fs.mkdirSync(claudeDir, { recursive: true })

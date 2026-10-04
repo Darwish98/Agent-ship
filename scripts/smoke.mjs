@@ -320,7 +320,7 @@ try {
   check(await waitFor(() => count('.rdlg')), 'Land… opened its dialog')
   await waitFor(() => count('.rdlg-plan')) // the plan is computed by the main process
   const landPlan = await evalJs(`document.querySelector('.rdlg-plan')?.innerText ?? ''`)
-  check(/Test the branch/.test(landPlan) && /Merge/.test(landPlan) && /Test the merged result/.test(landPlan) && /only now does/.test(landPlan), 'it lists test, merge, test the merge, then land')
+  check(!/Test the branch/.test(landPlan) && /Merge/.test(landPlan) && /Test the merged result/.test(landPlan) && /only now does/.test(landPlan), 'it lists merge, test the merged result, then land')
   check(/left exactly as it is now/.test(landPlan), 'it promises the base branch is untouched if anything fails')
   // This project has no package.json, so nothing is detected: the user supplies the test.
   const testCmd = `node -e "process.exit(require('fs').existsSync('built.txt')?0:1)"`

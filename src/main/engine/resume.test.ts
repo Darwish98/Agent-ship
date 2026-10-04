@@ -28,7 +28,7 @@ beforeEach(() => {
   git(repo, 'add', '-A')
   git(repo, 'commit', '-q', '-m', 'init')
 })
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
+afterEach(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }))
 
 const ok = (over: Partial<StepResult> = {}): StepResult => ({
   ok: true, result: 'done', costUsd: 0.1, tokens: 1000, sessionId: 's', budgetExhausted: false, timedOut: false, cancelled: false, ...over
@@ -300,15 +300,14 @@ describe('planResume with a Merge step', () => {
     ({ type: 'node.finished', at, runId: 'r', nodeId, attempt: 1, status: 'passed', costUsd: 0, tokens: 0, summary: 's' }) as RunEvent
 
   it('goes back to Merge if the run got past it, because the merged scratch copy does not survive a restart', () => {
-    const afterMerge = [started('test'), finished('test'), started('merge'), finished('merge'), started('verify')]
+    const afterMerge = [started('merge'), finished('merge'), started('verify')]
     expect(planResume(afterMerge, bp, repo).node?.id).toBe('merge')
     const inLand = [...afterMerge, finished('verify'), started('land')]
     expect(planResume(inLand, bp, repo).node?.id).toBe('merge')
   })
 
-  it('is unchanged before the Merge step', () => {
-    expect(planResume([started('test'), finished('test')], bp, repo).node?.id).toBe('merge')
-    expect(planResume([started('test')], bp, repo).node?.id).toBe('test')
+  it('is unchanged while the Merge step itself was the one running', () => {
+    expect(planResume([started('merge')], bp, repo).node?.id).toBe('merge')
   })
 })
 

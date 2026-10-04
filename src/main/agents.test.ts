@@ -10,7 +10,7 @@ vi.mock('electron', () => ({ shell: { openExternal: vi.fn() } }))
 let dir = ''
 afterEach(() => {
   vi.unstubAllEnvs()
-  if (dir) fs.rmSync(dir, { recursive: true, force: true })
+  if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 /** A stand-in for `claude` whose `agents --json` lists exactly these pids. */

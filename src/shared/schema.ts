@@ -124,7 +124,6 @@ export const blueprintSchema = z.object({
 export type Budget = z.infer<typeof budgetSchema>
 export type BlueprintNode = z.infer<typeof nodeSchema>
 export type BlueprintEdge = z.infer<typeof edgeSchema>
-export type BlueprintInput = z.infer<typeof inputSchema>
 export type Blueprint = z.infer<typeof blueprintSchema>
 export type NodeKind = BlueprintNode['kind']
 

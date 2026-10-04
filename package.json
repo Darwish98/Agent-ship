@@ -17,7 +17,8 @@
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
     "smoke:parallel": "node scripts/smoke-parallel.mjs",
-    "smoke:packaged": "node scripts/smoke-packaged.mjs"
+    "smoke:packaged": "node scripts/smoke-packaged.mjs",
+    "probe:tokens": "node scripts/probe-tokens.mjs"
   },
   "author": "",
   "license": "MIT",

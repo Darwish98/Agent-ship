@@ -10,7 +10,7 @@ let dir: string
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-test-'))
 })
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
+afterEach(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }))
 
 describe('planExists', () => {
   it('is false when there is no plan file, true once one is written', () => {
