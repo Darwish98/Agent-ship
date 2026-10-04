@@ -77,9 +77,17 @@ export interface PipelineStage {
 
 export const STAGE_LABEL: Record<StageId, string> = { build: 'Build', test: 'Test', merge: 'Merge', land: 'Land' }
 
+/** One thing a task is made of. A task is a card; these are what is inside it. */
+export interface TaskPart {
+  kind: 'session' | 'flow' | 'branch' | 'landing'
+  label: string
+}
+
 export interface WorkItem {
   /** Stable across refreshes, so selection survives a poll. */
   id: string
+  /** What the card's main action works on: the part that decided its lane. The
+   *  other parts (see `parts`) ride along on the same card. */
   kind: 'run' | 'session' | 'branch'
   lane: Lane
   projectId: string
@@ -96,6 +104,8 @@ export interface WorkItem {
   verification?: Verification
   /** Build → Test → Merge → Land, for every kind of task. */
   pipeline: PipelineStage[]
+  /** Everything this task is made of: its session(s), flow, branch and landing. */
+  parts: TaskPart[]
   /** The run that is landing (or tried to land) this branch. */
   landRun?: RunView
   /** Sessions or runs that produced this branch. */
@@ -259,6 +269,7 @@ function runItem(run: RunView, acknowledged: ReadonlySet<string>): WorkItem {
     updatedAt: run.endedAt ?? run.startedAt,
     run,
     pipeline: pipelineForRun(run),
+    parts: [] as TaskPart[],
     authors: [] as string[],
     authorSessions: [] as SessionLite[]
   }
@@ -380,8 +391,10 @@ export function deriveFloor(input: FloorInput): FloorModel {
       reasons,
       priority,
       branch: b,
+      run,
       verification,
       pipeline: pipelineForBranch(verification, authors, landRun),
+      parts: [],
       landRun,
       authors,
       authorSessions,
@@ -447,6 +460,7 @@ export function deriveFloor(input: FloorInput): FloorModel {
       session: s,
       pipeline: landedHere ? pipelineForBranch({ state: 'unverified' }, [s.name], landing) : pipelineForSession(s),
       landRun: landedHere ? landing : undefined,
+      parts: [] as TaskPart[],
       authors: [] as string[],
       authorSessions: [] as SessionLite[]
     }
@@ -470,8 +484,35 @@ export function deriveFloor(input: FloorInput): FloorModel {
     }
   }
 
+  // One piece of work is one card. A session, the flow that ran it, the branch
+  // it produced and the attempt to land it are parts of the same task.
+  const runBranchKey = (r: RunView): string | undefined => {
+    for (const n of Object.values(r.nodes)) if (n.branch && branchKeys.has(`${r.projectId}:${n.branch}`)) return `${r.projectId}:${n.branch}`
+    return r.branch && branchKeys.has(`${r.projectId}:${r.branch}`) ? `${r.projectId}:${r.branch}` : undefined
+  }
+  const groupOf = (it: WorkItem): string => {
+    if (it.kind === 'branch' && it.branch) return `branch:${it.projectId}:${it.branch.branch}`
+    if (it.kind === 'session' && it.session) {
+      if (it.session.branch && branchKeys.has(`${it.projectId}:${it.session.branch}`)) return `branch:${it.projectId}:${it.session.branch}`
+      if (it.landRun) return `land:${it.landRun.runId}`
+    }
+    if (it.kind === 'run' && it.run) {
+      if (it.run.flowSlug === LAND_FLOW) return `land:${it.run.runId}`
+      const bk = runBranchKey(it.run)
+      if (bk) return `branch:${bk}`
+    }
+    return it.id
+  }
+  const groups = new Map<string, WorkItem[]>()
+  for (const it of items) {
+    const k = groupOf(it)
+    groups.set(k, [...(groups.get(k) ?? []), it])
+  }
+  const tasks = [...groups.entries()].map(([key, members]) => (members.length === 1 ? members[0] : combineTask(key, members)))
+  for (const t of tasks) t.parts = partsOf(t)
+
   const byLane: Record<Lane, WorkItem[]> = { needs: [], running: [], ready: [], done: [] }
-  for (const it of items) byLane[it.lane].push(it)
+  for (const it of tasks) byLane[it.lane].push(it)
   for (const lane of LANES) byLane[lane].sort((a, b) => b.priority - a.priority || b.updatedAt - a.updatedAt)
 
   const attentionByProject = new Map<string, number>()
@@ -480,7 +521,67 @@ export function deriveFloor(input: FloorInput): FloorModel {
   const today = startOfDay(now)
   const spendTodayUsd = runs.filter((r) => r.startedAt >= today || isActive(r.status)).reduce((sum, r) => sum + r.spentUsd, 0)
 
-  return { items, byLane, hiddenOlder, spendTodayUsd, attentionByProject }
+  return { items: tasks, byLane, hiddenOlder, spendTodayUsd, attentionByProject }
+}
+
+const LANE_RANK: Record<Lane, number> = { needs: 3, running: 2, ready: 1, done: 0 }
+/** Which part a card is "about" when parts are equally urgent: landing a branch
+ *  beats a session, which beats the flow that happened to produce it. */
+const KIND_RANK: Record<WorkItem['kind'], number> = { branch: 3, session: 2, run: 1 }
+
+/**
+ * Folds the items that belong to one task into a single card. The part that is
+ * most urgent decides the lane and what the card's buttons do (a failed flow
+ * outranks its branch being ready; a session still working outranks its branch
+ * being landable). The id is the task's, so selecting it survives its parts
+ * changing hands.
+ */
+function combineTask(key: string, members: WorkItem[]): WorkItem {
+  const ranked = [...members].sort((a, b) => LANE_RANK[b.lane] - LANE_RANK[a.lane] || KIND_RANK[b.kind] - KIND_RANK[a.kind] || b.priority - a.priority)
+  const base = ranked[0]
+  const same = ranked.filter((m) => m.lane === base.lane)
+  const first = <T,>(pick: (m: WorkItem) => T | undefined): T | undefined => {
+    for (const m of ranked) {
+      const v = pick(m)
+      if (v !== undefined) return v
+    }
+    return undefined
+  }
+  const sessionPart = ranked.find((m) => m.session)?.session
+  const authorSessions = [...new Map(ranked.flatMap((m) => m.authorSessions).map((s) => [s.sessionId, s])).values()]
+  return {
+    ...base,
+    id: key,
+    // A session's own name is the most human title; otherwise the lead part's.
+    title: sessionPart?.name ?? base.title,
+    reasons: same.flatMap((m) => m.reasons),
+    priority: Math.max(...same.map((m) => m.priority)),
+    updatedAt: Math.max(...members.map((m) => m.updatedAt)),
+    session: sessionPart,
+    run: first((m) => m.run && m.run.flowSlug !== LAND_FLOW ? m.run : undefined) ?? base.run,
+    branch: first((m) => m.branch),
+    landRun: first((m) => m.landRun),
+    verification: first((m) => m.verification),
+    authorSessions,
+    authors: [...new Set(ranked.flatMap((m) => m.authors))],
+    stale: base.stale && members.every((m) => m.lane === 'ready')
+  }
+}
+
+/** The parts to list on a card, from what the item actually holds. */
+function partsOf(it: WorkItem): TaskPart[] {
+  const parts: TaskPart[] = []
+  const seen = new Set<string>()
+  for (const s of [...(it.session ? [it.session] : []), ...it.authorSessions]) {
+    if (seen.has(s.sessionId)) continue
+    seen.add(s.sessionId)
+    parts.push({ kind: 'session', label: s.name })
+  }
+  if (it.run && it.run.flowSlug !== LAND_FLOW) parts.push({ kind: 'flow', label: it.run.blueprint.name })
+  if (it.branch) parts.push({ kind: 'branch', label: it.branch.branch })
+  const landing = it.landRun ?? (it.run && it.run.flowSlug === LAND_FLOW ? it.run : undefined)
+  if (landing) parts.push({ kind: 'landing', label: landing.status === 'passed' ? 'Landed' : isActive(landing.status) ? 'Landing' : 'Landing attempt' })
+  return parts
 }
 
 /** What we remember about a session's checkout while it held uncommitted work. */

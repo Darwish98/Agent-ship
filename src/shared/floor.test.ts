@@ -101,7 +101,9 @@ describe('outcomes', () => {
     const r = makeRun({ end: 'failed', gatePass: false, branch: 'agentship/bbb-build' })
     expect(verificationOf(r)).toEqual({ state: 'failed', by: 'Tests pass' })
     const f = derive({ runs: [r], branches: [branch({ branch: 'agentship/bbb-build' })] })
-    expect(f.byLane.ready[0].verification?.state).toBe('failed')
+    // The failed run and the branch it left are one task, and the failure is what needs you.
+    expect(f.items).toHaveLength(1)
+    expect(f.byLane.needs[0].verification?.state).toBe('failed')
   })
 
   it('ranks verified branches above unverified ones', () => {
@@ -282,6 +284,73 @@ describe('the pipeline inside every task', () => {
     expect(g.byLane.needs[0].run?.runId).toBe(failed2.runId)
   })
 });
+
+describe('one task is one card, whatever it is made of', () => {
+  it('a session still working on a branch that already exists is one card, not a session and a branch', () => {
+    const s = session({ name: 'Auth refactor', live: true, working: true, branch: 'feat/auth' })
+    const f = derive({ sessions: [s], branches: [branch({ branch: 'feat/auth' })] })
+    expect(f.items).toHaveLength(1)
+    const t = f.items[0]
+    expect(t.lane).toBe('running') // the session is still building: not landable yet
+    expect(t.title).toBe('Auth refactor')
+    expect(t.parts.map((p) => p.kind)).toEqual(['session', 'branch'])
+    expect(t.branch?.branch).toBe('feat/auth')
+    expect(t.session?.sessionId).toBe(s.sessionId)
+  })
+
+  it('once that session finishes, the same task is simply ready to land, under the same id', () => {
+    const working = derive({ sessions: [session({ sessionId: 'sx', live: true, working: true, branch: 'feat/auth' })], branches: [branch({ branch: 'feat/auth' })] })
+    const done = derive({ sessions: [session({ sessionId: 'sx', live: true, working: false, branch: 'feat/auth' })], branches: [branch({ branch: 'feat/auth' })] })
+    expect(done.items).toHaveLength(1)
+    expect(done.byLane.ready).toHaveLength(1)
+    // A selection made while it was running is still the selection (the id is the task's).
+    expect(done.items[0].id).toBe(working.items[0].id)
+  })
+
+  it('a failed flow and the branch it left behind are one card, in Needs you, with both parts', () => {
+    const r = makeRun({ end: 'failed', gatePass: false, branch: 'agentship/zzz-build' })
+    const f = derive({ runs: [r], branches: [branch({ branch: 'agentship/zzz-build' })] })
+    expect(f.items).toHaveLength(1)
+    expect(f.byLane.needs).toHaveLength(1)
+    const t = f.byLane.needs[0]
+    expect(t.kind).toBe('run') // what needs you is the flow
+    expect(t.parts.map((p) => p.kind)).toEqual(['flow', 'branch'])
+    expect(t.run?.runId).toBe(r.runId)
+    expect(t.branch?.branch).toBe('agentship/zzz-build')
+  })
+
+  it('a branch that is being landed shows the landing as part of itself', () => {
+    const lr = landRun({ upTo: 'merge', end: null })
+    const f = derive({ runs: [lr], branches: [branch()] })
+    expect(f.items).toHaveLength(1)
+    expect(f.items[0].parts.map((p) => p.kind)).toEqual(['branch', 'landing'])
+  })
+
+  it('work landed through Agent Ship is one Done card, not the session and a separate "Landed" flow', () => {
+    const s = session({ live: true, working: false, dirtyFiles: 0, cwd: '/r' })
+    const lr = landRun({ end: 'passed', startedAt: NOW - 60_000 })
+    lr.inputs = { ...lr.inputs, session: s.sessionId, checkout: '/r' }
+    const f = derive({ sessions: [s], runs: [lr] })
+    expect(f.byLane.done).toHaveLength(1)
+    expect(f.byLane.done[0].kind).toBe('session')
+    expect(f.byLane.done[0].parts.map((p) => p.kind)).toEqual(['session', 'landing'])
+  })
+
+  it('every card lists what it is made of, even when it is just one thing', () => {
+    expect(derive({ branches: [branch()] }).items[0].parts.map((p) => p.kind)).toEqual(['branch'])
+    expect(derive({ sessions: [session()] }).items[0].parts.map((p) => p.kind)).toEqual(['session'])
+    expect(derive({ runs: [makeRun({ end: null })] }).items[0].parts.map((p) => p.kind)).toEqual(['flow'])
+  })
+
+  it('unrelated work stays separate: a session on another branch, a run with no branch', () => {
+    const f = derive({
+      sessions: [session({ branch: 'feat/other' })],
+      runs: [makeRun({ end: null })],
+      branches: [branch({ branch: 'feat/auth' })]
+    })
+    expect(f.items).toHaveLength(3)
+  })
+})
 
 describe('an open session that has finished its turn', () => {
   it('is not "building" any more: Build is done, and what it left behind is what the next stages wait for', () => {

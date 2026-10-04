@@ -3,7 +3,7 @@ import { STAGE_LABEL, type StageId, type WorkItem } from '../../../shared/floor'
 import { formatUsd } from '../../../shared/runs'
 import { formatAgo, formatTokens } from '../lib/crew'
 import { formatDuration, RunDetail } from '../runs/RunDetail'
-import { canCommitAndLand, VerifyBadge, type FloorActions } from './Cards'
+import { canCommitAndLand, PartTags, VerifyBadge, type FloorActions } from './Cards'
 import { PipelineStrip } from './PipelineStrip'
 
 interface Props {
@@ -25,8 +25,8 @@ export function Drawer({ item, projectName, projectPath, baseBranch, actions, on
     <aside className="fl-drawer" aria-label="Details">
       <header className="fl-drawer-head">
         <div>
-          <span className="fc-kind">{item.kind === 'run' ? 'FLOW RUN' : item.kind.toUpperCase()}</span>
           <h3 title={item.title}>{item.title}</h3>
+          <PartTags parts={item.parts} />
           <span className="fl-drawer-proj">{projectName}</span>
         </div>
         <button type="button" className="btn" onClick={onClose} aria-label="Close details">
@@ -36,10 +36,17 @@ export function Drawer({ item, projectName, projectPath, baseBranch, actions, on
 
       <PipelinePanel item={item} actions={actions} />
 
-      {item.kind === 'run' && item.run && <RunDetail run={item.run} />}
+      {/* A branch's own flow is reached through "View the run that built it". */}
+      {item.run && item.kind !== 'branch' && (
+        <>
+          {item.parts.length > 1 && <h4 className="rd-h fl-h-pad">Flow run</h4>}
+          <RunDetail run={item.run} />
+        </>
+      )}
 
-      {item.kind === 'session' && item.session && (
+      {item.session && (
         <div className="rd">
+          {item.parts.length > 1 && <h4 className="rd-h">Session</h4>}
           <dl className="fl-dl">
             <dt>State</dt>
             <dd>{item.session.live ? item.session.status : `idle, ${formatAgo(item.session.lastActive)}`}</dd>
@@ -71,8 +78,9 @@ export function Drawer({ item, projectName, projectPath, baseBranch, actions, on
         </div>
       )}
 
-      {item.kind === 'branch' && item.branch && (
+      {item.branch && (
         <>
+          {item.parts.length > 1 && <h4 className="rd-h fl-h-pad">Branch</h4>}
           <BranchPanel item={item} projectPath={projectPath} baseBranch={baseBranch} actions={actions} onRunOf={onRunOf} />
           {item.landRun && (
             <>
