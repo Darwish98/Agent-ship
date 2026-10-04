@@ -19,7 +19,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  fs.rmSync(path.dirname(userData), { recursive: true, force: true })
+  fs.rmSync(path.dirname(userData), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 const flowFile = (slug: string): string => path.join(repo, '.agentship', 'flows', `${slug}.flow.json`)

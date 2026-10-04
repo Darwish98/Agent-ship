@@ -232,7 +232,7 @@ export function pipelineForBranch(verification: Verification, authors: string[],
         ? stage('test', 'passed', `A gate passed: ${verification.by}.`)
         : verification.state === 'failed'
           ? stage('test', 'failed', `The gate "${verification.by}" failed on this branch.`)
-          : stage('test', 'idle', 'No gate has checked this. Landing tests it first.')
+          : stage('test', 'idle', 'No gate has checked this. Landing tests the merged result.')
     return [build, test, stage('merge', 'idle', 'Merges into the base in a scratch copy.'), stage('land', 'idle', 'Moves the base only after the merged result passes.')]
   }
   const land = pipelineForRun(landRun)

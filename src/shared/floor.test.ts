@@ -178,20 +178,20 @@ import { pipelineForRun, pipelineForSession } from './floor'
 const states = (item: { pipeline: { id: string; state: string }[] }): string =>
   item.pipeline.map((s) => `${s.id}:${s.state}`).join(' ')
 
-function landRun(opts: { branch?: string; startedAt?: number; project?: string; upTo?: 'test' | 'merge' | 'verify' | 'land'; fail?: 'test' | 'merge' | 'verify' | 'land'; end?: 'passed' | 'failed' | null }): RunView {
+function landRun(opts: { branch?: string; startedAt?: number; project?: string; upTo?: 'merge' | 'verify' | 'land'; fail?: 'merge' | 'verify' | 'land'; end?: 'passed' | 'failed' | null }): RunView {
   const id = `00000000-0000-0000-0001-${String(++n).padStart(12, '0')}`
   const bp = buildLandBlueprint({ branch: opts.branch ?? 'feat/x', base: 'main', testCommand: 'npm test', resolveConflicts: true })
   const t = opts.startedAt ?? NOW - 60_000
   const ev: RunEvent[] = [
     { type: 'run.started', at: t, runId: id, projectId: opts.project ?? 'p1', projectName: 'repo', projectPath: '/r', flowSlug: LAND_FLOW, blueprint: bp, inputs: { branch: opts.branch ?? 'feat/x' }, ceilingUsd: 1 }
   ]
-  const order = ['test', 'merge', 'verify', 'land'] as const
+  const order = ['merge', 'verify', 'land'] as const
   const upTo = opts.upTo ?? 'land'
   let k = 1
   for (const step of order) {
     if (order.indexOf(step) > order.indexOf(upTo)) break
     ev.push({ type: 'node.started', at: t + k++, runId: id, nodeId: step, attempt: 1, cwd: '/w' })
-    const isGate = step === 'test' || step === 'verify'
+    const isGate = step === 'verify'
     const bad = opts.fail === step
     if (isGate) ev.push({ type: 'gate.result', at: t + k++, runId: id, nodeId: step, attempt: 1, pass: !bad, by: 'command', detail: bad ? 'exit 1' : 'exit 0' })
     else if (opts.end !== null || step !== upTo) ev.push({ type: 'node.finished', at: t + k++, runId: id, nodeId: step, attempt: 1, status: bad ? 'failed' : 'passed', costUsd: 0, tokens: 0, summary: 'ok', error: bad ? 'conflicts in README.md' : undefined })
@@ -217,7 +217,7 @@ describe('the pipeline inside every task', () => {
   it('an unlanded branch shows built, then tested or not, then two idle steps', () => {
     const f = derive({ branches: [branch()] })
     expect(states(f.byLane.ready[0])).toBe('build:passed test:idle merge:idle land:idle')
-    expect(f.byLane.ready[0].pipeline[1].note).toMatch(/Landing tests it first/)
+    expect(f.byLane.ready[0].pipeline[1].note).toMatch(/Landing tests the merged result/)
     const proven = makeRun({ end: 'passed', gatePass: true, branch: 'agentship/p-build' })
     const g = derive({ runs: [proven], branches: [branch({ branch: 'agentship/p-build' })] })
     expect(states(g.byLane.ready[0])).toBe('build:passed test:passed merge:idle land:idle')
@@ -230,7 +230,7 @@ describe('the pipeline inside every task', () => {
     expect(f.byLane.running).toHaveLength(1)
     const item = f.byLane.running[0]
     expect(item.kind).toBe('branch')
-    expect(states(item)).toBe('build:passed test:passed merge:running land:idle')
+    expect(states(item)).toBe('build:passed test:idle merge:running land:idle')
     expect(item.subtitle).toBe('Landing: Merge into main')
     expect(item.landRun?.runId).toBe(lr.runId)
   })
@@ -241,17 +241,17 @@ describe('the pipeline inside every task', () => {
     expect(f.byLane.needs).toHaveLength(1)
     expect(f.byLane.needs[0].kind).toBe('branch')
     expect(f.byLane.needs[0].reasons[0]).toMatch(/Landing stopped: feat\/x conflicts with main/)
-    expect(states(f.byLane.needs[0])).toBe('build:passed test:passed merge:failed land:idle')
+    expect(states(f.byLane.needs[0])).toBe('build:passed test:idle merge:failed land:idle')
     const g = derive({ runs: [lr], branches: [branch()], acknowledged: new Set([lr.runId]) })
     expect(g.byLane.needs).toHaveLength(0)
     expect(g.byLane.ready).toHaveLength(1)
   })
 
   it('tests that fail during landing mark the branch itself as failed', () => {
-    const lr = landRun({ upTo: 'test', fail: 'test', end: 'failed' })
+    const lr = landRun({ upTo: 'verify', fail: 'verify', end: 'failed' })
     const f = derive({ runs: [lr], branches: [branch()] })
-    expect(f.byLane.needs[0].verification).toEqual({ state: 'failed', by: 'Test the branch' })
-    expect(states(f.byLane.needs[0])).toBe('build:passed test:failed merge:idle land:idle')
+    expect(f.byLane.needs[0].verification).toEqual({ state: 'failed', by: 'Test the merged result' })
+    expect(states(f.byLane.needs[0])).toBe('build:passed test:failed merge:passed land:idle')
   })
 
   it('ignores a landing attempt from before the branch got new commits', () => {
@@ -373,7 +373,7 @@ describe('landing a session\'s uncommitted work, and work you committed yourself
   const checkout = '/repo'
 
   /** A landing started from a session's checkout (what Commit & land creates). */
-  function commitLandRun(opts: { end?: 'passed' | 'failed' | null; upTo?: 'test' | 'merge' | 'verify' | 'land'; project?: string; startedAt?: number; cwd?: string }): RunView {
+  function commitLandRun(opts: { end?: 'passed' | 'failed' | null; upTo?: 'merge' | 'verify' | 'land'; project?: string; startedAt?: number; cwd?: string }): RunView {
     const r = landRun({ branch: 'agentship/work-1', project: opts.project ?? 'p1', upTo: opts.upTo, end: opts.end ?? null, startedAt: opts.startedAt })
     r.inputs = { ...r.inputs, checkout: opts.cwd ?? checkout }
     return r
@@ -389,7 +389,7 @@ describe('landing a session\'s uncommitted work, and work you committed yourself
     expect(during.byLane.ready).toHaveLength(0) // the session card steps aside
     expect(during.byLane.running).toHaveLength(1)
     expect(during.byLane.running[0].kind).toBe('branch')
-    expect(states(during.byLane.running[0])).toBe('build:passed test:passed merge:running land:idle')
+    expect(states(during.byLane.running[0])).toBe('build:passed test:idle merge:running land:idle')
   })
 
   it('once landed, the session\'s own card shows the real pipeline, lit by what Agent Ship did', () => {

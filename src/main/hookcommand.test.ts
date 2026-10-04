@@ -58,7 +58,7 @@ describe.skipIf(process.platform !== 'win32')('the Windows launcher works from b
       return got
     } finally {
       server.close()
-      fs.rmSync(dir, { recursive: true, force: true })
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
     }
   }
 

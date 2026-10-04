@@ -60,23 +60,19 @@ export function LandDialog({ target, onClose }: { target: LandTarget; onClose: (
               <h4>What happens, in order</h4>
               <ol className="ld-steps">
                 <li>
-                  <strong>Test the branch</strong>
-                  {tests ? (
-                    <>
-                      {' '}
-                      by running <code>{tests}</code> in a scratch copy of it.
-                    </>
-                  ) : (
-                    ' is skipped: no test command is set.'
-                  )}
-                </li>
-                <li>
                   <strong>Merge</strong> it into a scratch copy of <code>{plan.baseBranch}</code>.{' '}
                   {resolve ? 'If it conflicts, an agent resolves the conflicts (up to $1).' : 'If it conflicts, landing stops and nothing changes.'}
                 </li>
                 <li>
                   <strong>Test the merged result</strong>
-                  {tests ? '. This is what catches two good changes that break each other.' : ' is skipped.'}
+                  {tests ? (
+                    <>
+                      {' '}
+                      by running <code>{tests}</code> there, once. This is what actually lands, and it catches two good changes that break each other.
+                    </>
+                  ) : (
+                    ' is skipped: no test command is set.'
+                  )}
                   {tests && resolve
                     ? ' If it fails, an agent works out whether the code or an out-of-date test is wrong, fixes it in the scratch copy, and it is tested again (up to 2 repairs, up to $1 each).'
                     : tests

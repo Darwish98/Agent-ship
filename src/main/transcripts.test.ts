@@ -13,7 +13,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.unstubAllEnvs()
-  fs.rmSync(home, { recursive: true, force: true })
+  fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 async function load(): Promise<typeof import('./transcripts')> {

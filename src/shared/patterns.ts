@@ -89,7 +89,7 @@ export const LAND_FLOW = '__land__'
 export interface LandOptions {
   branch: string
   base: string
-  /** Empty means "no tests": the Test steps are left out and the result is unverified. */
+  /** Empty means "no tests": the Test step is left out and the result is unverified. */
   testCommand: string
   resolveConflicts: boolean
   /** When the MERGED result fails its tests, let an agent fix the code (or the
@@ -106,20 +106,23 @@ export const LAND_REPAIR_ATTEMPTS = 2
 
 /** The brief for the agent that repairs a merged result whose tests fail. It
  *  works in the scratch copy, so nothing it does touches the base branch
- *  until the repaired result has passed the same tests again. */
+ *  until the repaired result has passed the same tests again. It is the first
+ *  place the tests ran, so it also has to tell a real failure from an
+ *  environmental one (a timeout or a locked temp file on a loaded machine). */
 function repairPrompt(base: string, tests: string): string {
   return [
     `The branch "{{branch}}" has been merged into a scratch copy of "${base}" (your working directory;`,
-    `nothing is committed to "${base}" yet) and the tests now FAIL on the merged result. They passed on`,
-    'the branch alone, so the failure comes from the combination, or from behaviour the change',
-    'deliberately altered.',
+    `nothing is committed to "${base}" yet) and the tests FAIL on the merged result.`,
     '',
-    'Work out which of these is true, then fix it:',
+    tests ? `First run \`${tests}\` yourself and look at what fails. Then decide which of these is true:` : 'Look at what fails, then decide which of these is true:',
+    '0. Nothing is wrong with the code or the tests. The failure was environmental: a timeout on a slow machine,',
+    '   a locked or half-deleted temp file (EPERM, EBUSY), a port already in use. If the tests pass when you run them',
+    '   again, or the failing assertion is only about elapsed time, change NOTHING and say so.',
     '1. The code is wrong. The failing test describes behaviour that should still hold. Fix the code.',
     '2. The test is out of date. The change intentionally altered what the test asserts. Update the test.',
     '',
-    'To decide, find out what the change was for: `git diff HEAD^1 HEAD` shows what the branch changed',
-    `against "${base}"; \`git log\` shows its commits. Read the project's intent too: PLAN.md and any`,
+    'To decide between 1 and 2, find out what the change was for: `git diff HEAD^1 HEAD` shows what the branch',
+    `changed against "${base}"; \`git log\` shows its commits. Read the project's intent too: PLAN.md and any`,
     'markdown under planning/ or docs/, if they exist.',
     '',
     'Rules:',
@@ -128,9 +131,8 @@ function repairPrompt(base: string, tests: string): string {
     '- Never delete a test, skip it, loosen an assertion, or special-case the test to make it pass.',
     '- Make the smallest change that makes the tests honestly pass. Do not refactor anything else.',
     '- Do not commit, push, rebase or switch branches; the caller commits your edits.',
-    tests ? `- Run \`${tests}\` yourself to confirm before you finish.` : '',
     '',
-    'Reply with one short paragraph: which tests failed, whether you changed the code or the tests, and why.'
+    'Reply with one short paragraph: which tests failed, whether you changed the code, the tests, or nothing, and why.'
   ]
     .filter((l, i, a) => !(l === '' && a[i - 1] === ''))
     .join('\n')
@@ -139,10 +141,15 @@ function repairPrompt(base: string, tests: string): string {
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 /**
- * The pipeline that lands a finished branch: test it, merge it into the base
- * in a scratch copy, test the merged result, and only then advance the base.
+ * The pipeline that lands a finished branch: merge it into the base in a
+ * scratch copy, test that merged result, and only then advance the base.
  * Nothing touches your checkout until the last step, and a failure at any
  * step leaves the base branch exactly as it was.
+ *
+ * The branch is deliberately not tested on its own first. What lands is the
+ * merged result, so that is what has to pass; testing the branch as well ran
+ * the same tree twice whenever the branch already sat on top of the base, and
+ * left a failure there with no way to be repaired.
  */
 export function buildLandBlueprint(o: LandOptions): Blueprint {
   const nodes: BlueprintNode[] = [trigger()]
@@ -165,7 +172,6 @@ export function buildLandBlueprint(o: LandOptions): Blueprint {
     config: { check: 'command', command: tests, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
   })
 
-  if (tests) add(gate('test', 'Test the branch'))
   add({
     id: 'merge',
     kind: 'merge',
@@ -201,7 +207,7 @@ export function buildLandBlueprint(o: LandOptions): Blueprint {
   return {
     schemaVersion: SCHEMA_VERSION,
     name: `Land ${clip(o.branch, 48)}`,
-    description: 'Tests a branch, merges it in a scratch copy, tests the result (an agent repairs a failing merge, up to a cap), then advances the base branch.',
+    description: 'Merges a branch in a scratch copy, tests the result (an agent repairs a failing one, up to a cap), then advances the base branch.',
     version: 1,
     defaultBudget: { maxUsd: o.maxUsd ?? 1 },
     inputs: [{ name: 'branch', label: 'Branch to land', required: true }],
@@ -213,7 +219,7 @@ export function buildLandBlueprint(o: LandOptions): Blueprint {
 const LAND_PATTERN: Blueprint = {
   ...buildLandBlueprint({ branch: '<branch>', base: 'main', testCommand: 'npm test', resolveConflicts: true }),
   name: 'Land a branch',
-  description: 'Test a branch, merge it into main in a scratch copy, test the result, then advance main. Set the branch as the run input.'
+  description: 'Merge a branch into main in a scratch copy, test the result, then advance main. Set the branch as the run input.'
 }
 
 // --- patterns that exercise the rest of the model --------------------------

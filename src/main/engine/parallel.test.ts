@@ -30,7 +30,7 @@ beforeEach(() => {
   git(repo, 'add', '-A')
   git(repo, 'commit', '-q', '-m', 'init')
 })
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
+afterEach(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }))
 
 const ok = (over: Partial<StepResult> = {}): StepResult => ({
   ok: true, result: 'done', costUsd: 0.1, tokens: 1000, sessionId: 's', budgetExhausted: false, timedOut: false, cancelled: false, ...over
@@ -213,7 +213,7 @@ describe('parallel copies', () => {
       const fake = new Fake((req) => {
         const n = copyOf(req)
         if (n === 2) return ok({ result: 'quick' })
-        return abortable(req, 3_000, () => ok({ result: 'slow' }))
+        return abortable(req, 60_000, () => ok({ result: 'slow' })) // would outlast the test timeout if it were waited for
       })
       const { engine, events } = harness(fake)
       const t0 = Date.now()
@@ -221,7 +221,7 @@ describe('parallel copies', () => {
       if (!r.ok) throw new Error(r.error)
       await engine.whenDone(r.runId)
 
-      expect(Date.now() - t0).toBeLessThan(2_500) // did not wait for the slow ones
+      expect(Date.now() - t0).toBeLessThan(20_000) // did not wait for the slow ones (a loaded machine is slow to make worktrees, hence the margin)
       const v = foldRun(events)!
       expect(v.status).toBe('passed')
       expect(v.nodes.pick.detail).toContain('Picked copy 2')

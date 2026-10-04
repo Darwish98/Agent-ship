@@ -41,7 +41,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  fs.rmSync(root, { recursive: true, force: true })
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 const ok = (over: Partial<StepResult> = {}): StepResult => ({
@@ -74,11 +74,11 @@ async function land(opts: { test?: string; resolve?: boolean; adapter?: AgentAda
 const worktreeCount = (): number => git('worktree', 'list').split('\n').length
 
 describe('landing a branch', () => {
-  it('tests it, merges it in a scratch copy, tests the merge, then moves main (checked out, clean)', async () => {
+  it('merges it in a scratch copy, tests the merged result once, then moves main (checked out, clean)', async () => {
     const { v } = await land()
     expect(v.status).toBe('passed')
     expect(Object.fromEntries(Object.entries(v.nodes).map(([k, n]) => [k, n.state]))).toEqual({
-      start: 'idle', test: 'passed', merge: 'passed', verify: 'passed', repair: 'idle', land: 'passed' // repair exists but was never needed
+      start: 'idle', merge: 'passed', verify: 'passed', repair: 'idle', land: 'passed' // repair exists but was never needed
     })
     // main moved, with a real merge commit, and the files on disk moved with it.
     expect(has('main', 'feat.txt')).toBe(true)
@@ -88,6 +88,14 @@ describe('landing a branch', () => {
     // Nothing is left behind, and the source branch is kept.
     expect(worktreeCount()).toBe(1)
     expect(git('branch', '--list', 'feat/x')).toContain('feat/x')
+  })
+
+  it('runs the test command once, not once for the branch and again for the merge', async () => {
+    const counter = path.join(root, 'runs.txt').replace(/\\/g, '/')
+    const test = `node -e "require('fs').appendFileSync('${counter}','x')"`
+    const { v } = await land({ test })
+    expect(v.status).toBe('passed')
+    expect(fs.readFileSync(counter, 'utf8')).toBe('x')
   })
 
   it('moves main without touching your files when main is not the checked-out branch', async () => {
@@ -101,24 +109,23 @@ describe('landing a branch', () => {
     expect(fs.existsSync(path.join(repo, 'feat.txt'))).toBe(false)
   })
 
-  it('leaves main exactly where it was when the branch fails its tests', async () => {
+  it('leaves main exactly where it was when the merged result fails its tests', async () => {
     const before = git('rev-parse', 'main')
-    const { v } = await land({ test: exists('does-not-exist.txt') })
+    const { v } = await land({ test: exists('does-not-exist.txt'), resolve: false })
     expect(v.status).toBe('failed')
-    expect(v.nodes.test.state).toBe('failed')
-    expect(v.nodes.merge.state).toBe('idle') // never got as far as merging
+    expect(v.nodes.verify.state).toBe('failed')
+    expect(v.nodes.land.state).toBe('idle')
     expect(git('rev-parse', 'main')).toBe(before)
     expect(worktreeCount()).toBe(1)
   })
 
-  it('does not land when the branch passes alone but the MERGED result fails (revert-on-red)', async () => {
-    // main gained a file the branch has never seen. Branch alone: fine. Merged: both present: fail.
+  it('does not land when only the MERGED result fails (revert-on-red)', async () => {
+    // main gained a file the branch has never seen. Branch alone would be fine; merged, both are present: fail.
     write('base-only.txt', 'x\n')
     commitAll('main moves on')
     const before = git('rev-parse', 'main')
     const test = `node -e "const f=require('fs');process.exit(f.existsSync('feat.txt')&&f.existsSync('base-only.txt')?1:0)"`
-    const { v } = await land({ test })
-    expect(v.nodes.test.state).toBe('passed')
+    const { v } = await land({ test, resolve: false })
     expect(v.nodes.merge.state).toBe('passed')
     expect(v.nodes.verify.state).toBe('failed')
     expect(v.status).toBe('failed')
