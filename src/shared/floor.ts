@@ -418,6 +418,9 @@ export function deriveFloor(input: FloorInput): FloorModel {
   const checkoutLands = runs
     .filter((r) => r.flowSlug === LAND_FLOW && r.inputs.checkout)
     .sort((a, b) => a.startedAt - b.startedAt)
+  // A branch landed from its own card has no session or checkout on record, only
+  // the branch name. A session that worked on that branch is still the one it was for.
+  const branchLands = runs.filter((r) => r.flowSlug === LAND_FLOW && r.inputs.branch).sort((a, b) => a.startedAt - b.startedAt)
   const landOf = (s: SessionLite): RunView | undefined => {
     const w = normPath(s.cwd)
     let found: RunView | undefined
@@ -431,6 +434,9 @@ export function deriveFloor(input: FloorInput): FloorModel {
       }
       const c = normPath(r.inputs.checkout)
       if (w === c || w.startsWith(`${c}/`) || c.startsWith(`${w}/`)) found = r
+    }
+    if (!found && s.branch) {
+      for (const r of branchLands) if (r.projectId === s.projectId && r.inputs.branch === s.branch) found = r
     }
     return found
   }
@@ -596,8 +602,9 @@ export interface PendingEpisode {
 /**
  * The work a session held is gone from its checkout. Who took it?
  *
- *  - `landing`: a landing Agent Ship ran for this very session finished after
- *    the episode began, so that landing is what removed it.
+ *  - `landing`: a landing Agent Ship ran for this very session, or for the
+ *    branch it was working on, finished after the episode began, so that
+ *    landing is what removed it.
  *  - `hand`: it was committed or merged by you (HEAD moved, or unmerged commits
  *    are gone) and no such landing explains it.
  *  - `none`: nothing we can say happened (e.g. the files were just discarded).
@@ -610,11 +617,14 @@ export function whoClearedIt(
   episode: PendingEpisode,
   nowHead: string,
   runs: readonly RunView[],
-  sessionId: string
+  sessionId: string,
+  branch = ''
 ): 'landing' | 'hand' | 'none' {
   const gone = (episode.dirty > 0 && episode.head !== nowHead) || episode.ahead > 0
   if (!gone) return 'none'
-  const landed = runs.some((r) => r.flowSlug === LAND_FLOW && r.inputs.session === sessionId && (r.endedAt ?? r.startedAt) >= episode.since)
+  const landed = runs.some(
+    (r) => r.flowSlug === LAND_FLOW && (r.inputs.session === sessionId || (branch !== '' && r.inputs.branch === branch)) && (r.endedAt ?? r.startedAt) >= episode.since
+  )
   return landed ? 'landing' : 'hand'
 }
 

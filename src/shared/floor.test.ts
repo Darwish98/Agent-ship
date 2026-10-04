@@ -336,6 +336,26 @@ describe('one task is one card, whatever it is made of', () => {
     expect(f.byLane.done[0].parts.map((p) => p.kind)).toEqual(['session', 'landing'])
   })
 
+  it('a session whose branch was landed from the branch card is one Done card, tested, merged and landed by Agent Ship', () => {
+    // The branch is gone from "ahead of main" once it has landed, so only its name links the two.
+    const s = session({ name: 'UI/UX engineer', live: true, working: false, dirtyFiles: 0, aheadCommits: 0, branch: 'feat/x' })
+    const lr = landRun({ branch: 'feat/x', end: 'passed', startedAt: NOW - 60_000 })
+    const f = derive({ sessions: [s], runs: [lr], branches: [] })
+    expect(f.items).toHaveLength(1)
+    const t = f.byLane.done[0]
+    expect(t.kind).toBe('session')
+    expect(t.parts.map((p) => p.kind)).toEqual(['session', 'landing'])
+    expect(states(t)).toBe('build:passed test:passed merge:passed land:passed')
+  })
+
+  it('a landing of the branch a session worked on is not mistaken for you merging it by hand', () => {
+    const episode = { head: 'a', dirty: 0, ahead: 2, since: NOW - 5 * 60_000 }
+    const lr = landRun({ branch: 'feat/x', end: 'passed', startedAt: NOW - 60_000 })
+    expect(whoClearedIt(episode, 'b', [lr], 'sess-1', 'feat/x')).toBe('landing')
+    expect(whoClearedIt(episode, 'b', [lr], 'sess-1', 'feat/other')).toBe('hand')
+    expect(whoClearedIt(episode, 'b', [lr], 'sess-1')).toBe('hand')
+  })
+
   it('every card lists what it is made of, even when it is just one thing', () => {
     expect(derive({ branches: [branch()] }).items[0].parts.map((p) => p.kind)).toEqual(['branch'])
     expect(derive({ sessions: [session()] }).items[0].parts.map((p) => p.kind)).toEqual(['session'])
