@@ -93,11 +93,11 @@ export function buildClaudeArgs(req: StepRequest, lean: LeanFlags = NO_LEAN): st
   // Skills and MCP tools are only kept for a step that was explicitly given one.
   if (lean.noSlash && !req.tools.some((t) => toolName(t) === 'Skill')) args.push('--disable-slash-commands')
   if (lean.strictMcp && !req.tools.some((t) => t.startsWith('mcp__'))) args.push('--strict-mcp-config')
-  // A read-only step with free-text output needs no Write/Edit/Task/Web tools.
-  // Not applied with a JSON schema: structured output is delivered through a
-  // tool of the CLI's own, and whether `--tools` leaves that one in place has
-  // not been verified (scripts/probe-tokens.mjs checks it).
-  if (lean.tools && req.access === 'read' && !req.jsonSchema.trim()) {
+  // A read-only step needs no Write/Edit/Task/Web tools. This also holds with a
+  // JSON schema: the CLI delivers structured output through its own tool, which
+  // `--tools` leaves in place (measured by scripts/probe-tokens.mjs: ~21.8k ->
+  // ~9.5k tokens of context per call, output still valid).
+  if (lean.tools && req.access === 'read') {
     args.push('--tools', ...new Set([...READ_TOOLS, ...req.tools.map(toolName)]))
   }
   // Nothing is ever allowed to prompt: a step that would ask is denied, and

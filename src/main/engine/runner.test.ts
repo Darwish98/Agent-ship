@@ -523,9 +523,15 @@ describe('claude cli arguments', () => {
       expect(rest.slice(0, rest.findIndex((x) => x.startsWith('--')))).toEqual(['Read', 'Glob', 'Grep', 'Bash'])
     })
 
-    it('does not narrow built-in tools for an editing step, or for a step that returns structured JSON', () => {
+    it('does not narrow built-in tools for an editing step', () => {
       expect(withLean({ access: 'edit' })).not.toContain('--tools')
-      expect(withLean({ access: 'read', jsonSchema: '{"type":"object"}' })).not.toContain('--tools')
+      expect(withLean({ access: 'edit', jsonSchema: '{"type":"object"}' })).not.toContain('--tools')
+    })
+
+    it('narrows a read-only step that returns structured JSON too (probe: output stays valid)', () => {
+      const a = withLean({ access: 'read', jsonSchema: '{"type":"object"}' })
+      expect(a).toContain('--tools')
+      expect(a[a.indexOf('--json-schema') + 1]).toBe('{"type":"object"}')
     })
 
     it('still ends with the allow-list, and still never allows prompting', () => {
