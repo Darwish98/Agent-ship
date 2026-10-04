@@ -96,6 +96,7 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#F5F4EE',
+    icon: path.join(__dirname, '../../build/icon.png'),
     title: `Agent Ship (${BUILD})`,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
