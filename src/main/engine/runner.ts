@@ -52,6 +52,11 @@ const JUDGE_SCHEMA = JSON.stringify({
   properties: { winner: { type: 'integer' }, reason: { type: 'string' } },
   required: ['winner', 'reason']
 })
+const AGENT_GATE_SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: { done: { type: 'boolean' }, reason: { type: 'string' } },
+  required: ['done', 'reason']
+})
 
 const clip = (s: string, n = OUTPUT_CAP): string => (s.length > n ? `${s.slice(0, n)}\n…(truncated)` : s)
 const tail = (s: string, n = 6_000): string => (s.length > n ? `…(truncated)\n${s.slice(-n)}` : s)
@@ -448,7 +453,8 @@ export class RunEngine {
       emit({ type: 'node.started', at: this.now(), runId, nodeId: node.id, attempt, cwd: c.cwd, ...copyFields(c) })
       let pass = false
       let detail = ''
-      let by: 'command' | 'human' = 'command'
+      let by: 'command' | 'human' | 'agent' = 'command'
+      let stop: Stop | undefined
 
       if (node.config.check === 'human') {
         by = 'human'
@@ -460,6 +466,58 @@ export class RunEngine {
         live.decide = undefined
         pass = decision.approve
         detail = decision.note || (pass ? 'Approved.' : 'Rejected.')
+      } else if (node.config.check === 'agent') {
+        // The loop primitive: an agent judges pass/fail instead of a shell
+        // command, reusing the gate's own retry cap as the loop's iteration
+        // cap and its `fail` edge as "not done yet, go around again".
+        by = 'agent'
+        const remaining = remainingUsd()
+        if (remaining < MIN_STEP_USD) {
+          stop = { status: 'budget', reason: `The run's spending ceiling ($${ceilingUsd < 1 ? ceilingUsd.toFixed(3) : ceilingUsd.toFixed(2)}) is used up.` }
+          detail = 'No budget left to ask.'
+        } else {
+          const prompt = renderTemplate(node.config.agentPrompt, promptVars(view(), c.upstream, { branch: c.branch ?? '' }))
+          const capUsd = Math.min(node.budget?.maxUsd ?? bp.defaultBudget.maxUsd ?? remaining, remaining)
+          const label = node.label || 'Gate'
+          reserved += capUsd
+          let res: StepResult
+          try {
+            res = await this.deps.adapter.run({
+              prompt,
+              cwd: c.cwd,
+              sessionId: crypto.randomUUID(),
+              resume: false,
+              model: node.config.agentModel,
+              access: 'read',
+              tools: node.config.agentTools,
+              maxUsd: capUsd,
+              jsonSchema: AGENT_GATE_SCHEMA,
+              env: { AGENT_SHIP_NAME: label, AGENT_SHIP_ROLE: 'Gate', AGENT_SHIP_TASK: `${bp.name}: ${label}` },
+              timeoutMs: (node.budget?.maxMinutes ?? DEFAULT_AGENT_MINUTES) * 60_000,
+              signal: c.signal
+            })
+          } finally {
+            reserved -= capUsd
+          }
+          spent += res.costUsd
+          if (res.cancelled) {
+            stop = stopOf(c)
+            detail = 'Cancelled.'
+          } else if (res.budgetExhausted) {
+            stop = { status: 'budget', reason: `"${label}" hit its dollar limit.` }
+            detail = 'Hit its dollar limit before answering.'
+          } else if (!res.ok) {
+            // Ambiguous, not fatal: let the ordinary retry cap decide how long
+            // to keep trying rather than ending the whole run on one bad call.
+            detail = `Could not evaluate: ${res.error ?? 'unknown error'}.`
+          } else {
+            const s = res.structured as { done?: unknown; reason?: unknown } | undefined
+            // Never trust a missing or malformed answer as "done" - an
+            // ambiguous reply must never silently end the loop early.
+            pass = s?.done === true
+            detail = typeof s?.reason === 'string' && s.reason.trim() ? s.reason.trim() : pass ? 'Done.' : 'Not done yet.'
+          }
+        }
       } else {
         const out = await runCommand(node.config.command, c.cwd, (node.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000, c.signal)
         pass = out.code === 0
@@ -467,6 +525,7 @@ export class RunEngine {
       }
 
       emit({ type: 'gate.result', at: this.now(), runId, nodeId: node.id, attempt, pass, by, detail: clip(detail, 6_000) })
+      if (stop) return { stop }
       if (c.signal.aborted) return { stop: stopOf(c) }
 
       if (pass) return { next: outEdge(node, 'pass') }

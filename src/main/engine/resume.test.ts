@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { foldRun, type RunEvent } from '../../shared/runs'
-import { buildLandBlueprint, fromPattern, PATTERNS } from '../../shared/patterns'
+import { buildLandBlueprint, emptyBlueprint, fromPattern, PATTERNS } from '../../shared/patterns'
 import type { Blueprint } from '../../shared/schema'
 import type { AgentAdapter, StepRequest, StepResult } from './adapter'
 import * as gitops from './gitops'
@@ -366,5 +366,52 @@ describe('orphan worktree sweep', () => {
     const now = 10 * RESUME_WINDOW_MS
     const keep = resumableRunIds([mk('recent', 'interrupted', now - 1000), mk('old', 'interrupted', now - RESUME_WINDOW_MS - 1), mk('failed', 'failed', now)], now)
     expect([...keep]).toEqual(['recent'])
+  })
+})
+
+describe('resuming an agent-checked (loop) gate', () => {
+  function loopFlow(maxRetries = 5): Blueprint {
+    const bp = emptyBlueprint('Loop')
+    bp.nodes.push(
+      {
+        id: 'build', kind: 'agent', label: 'Builder', position: { x: 290, y: 0 }, budget: { maxUsd: 0.4 },
+        config: { role: 'Builder', model: 'default', prompt: 'Do the next thing.', worktree: false, access: 'edit', tools: [], outputSchema: '' }
+      },
+      {
+        id: 'check', kind: 'gate', label: 'Plan done?', position: { x: 580, y: 0 }, budget: { maxRetries, maxUsd: 0.3 },
+        config: { check: 'agent', command: '', instructions: '', agentPrompt: 'Is it done?', agentModel: 'default', agentTools: [] }
+      }
+    )
+    bp.edges.push(
+      { id: 'a', from: 'start', to: 'build', type: 'control', condition: 'always' },
+      { id: 'b', from: 'build', to: 'check', type: 'artifact', condition: 'always' },
+      { id: 'c', from: 'check', to: 'build', type: 'verdict', condition: 'fail' }
+    )
+    return bp
+  }
+  const isCheck = (req: StepRequest): boolean => req.env.AGENT_SHIP_ROLE === 'Gate'
+
+  it('treats an interrupted check the same as a command gate cancelled mid-run: a failed attempt, repaired (asked again) once resumed', async () => {
+    const first = harness(new Fake((req) => (isCheck(req) ? hangUntilAborted(req) : ok())))
+    const r = await first.engine.start(args(loopFlow()))
+    if (!r.ok) throw new Error(r.error)
+    for (let i = 0; i < 100 && !first.events.some((e) => e.type === 'node.started' && e.nodeId === 'check'); i++) await new Promise((res) => setTimeout(res, 20))
+    await first.engine.suspendAll()
+    expect(foldRun(first.events)!.status).toBe('interrupted')
+    // Cancelled mid-call still records what happened, exactly like a killed
+    // command gate does: a failed attempt, never a silent "it must be done".
+    const gr = first.events.find((e) => e.type === 'gate.result')
+    expect(gr?.type === 'gate.result' && gr.pass).toBe(false)
+
+    const second = harness(new Fake((req) => (isCheck(req) ? ok({ structured: { done: true, reason: 'all done now' } }) : ok())), 'runs')
+    const persisted = first.store.read(r.runId)
+    const resumed = await second.engine.resume(persisted)
+    if (!resumed.ok) throw new Error(resumed.error)
+    await second.engine.whenDone(r.runId)
+
+    const v = foldRun([...persisted, ...second.events])!
+    expect(v.status).toBe('passed')
+    expect(v.nodes.check.detail).toBe('all done now')
+    expect(v.nodes.build.attempts).toBe(2) // resumed via the fail edge: the builder ran once more before asking again
   })
 })

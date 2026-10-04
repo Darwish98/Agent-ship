@@ -1,9 +1,9 @@
 import { useCallback, useMemo, useState, type JSX } from 'react'
 import { LANES, type Lane, type WorkItem } from '../../../shared/floor'
 import { slugify } from '../../../shared/blueprint'
-import { fromPattern, PATTERNS } from '../../../shared/patterns'
-import { formatUsd } from '../../../shared/runs'
-import { FuelGauge } from '../components/FuelGauge'
+import { fromPattern, PATTERNS, PLAN_FILE } from '../../../shared/patterns'
+import { formatUsd, isActive } from '../../../shared/runs'
+import { UsageGauge } from '../components/UsageGauge'
 import { TaskDialog, type TaskDialogSpec } from '../components/TaskDialog'
 import { useNav } from '../nav'
 import { useRuns } from '../runs/RunsProvider'
@@ -11,7 +11,9 @@ import type { Room } from '../types'
 import { WorkCard, type FloorActions } from './Cards'
 import { CommitLandDialog, type CommitLandTarget } from './CommitLandDialog'
 import { Drawer } from './Drawer'
+import { LandAllDialog, type LandAllItem } from './LandAllDialog'
 import { LandDialog, type LandTarget } from './LandDialog'
+import { PlanSetupDialog, type PlanSetupTarget } from './PlanSetupDialog'
 import { useFloorData } from './useFloorData'
 
 const LANE_META: Record<Lane, { title: string; blurb: string; empty: string }> = {
@@ -24,6 +26,9 @@ const LANE_META: Record<Lane, { title: string; blurb: string; empty: string }> =
 /** The starter flows offered to a project that has none: a general supervisor
  *  and the gated build pipeline. */
 const STARTERS = [PATTERNS[0], PATTERNS[2]]
+
+const AUTOPILOT_PATTERN = PATTERNS[4]
+const AUTOPILOT_SLUG = slugify(AUTOPILOT_PATTERN.name)
 
 export function Floor({ active }: { active: boolean }): JSX.Element {
   const data = useFloorData(active)
@@ -38,6 +43,8 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
   const [launchOpen, setLaunchOpen] = useState<string | null>(null)
   const [landing, setLanding] = useState<LandTarget | null>(null)
   const [committing, setCommitting] = useState<CommitLandTarget | null>(null)
+  const [landingAll, setLandingAll] = useState<LandAllItem[] | null>(null)
+  const [planSetup, setPlanSetup] = useState<PlanSetupTarget | null>(null)
 
   const roomById = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms])
   const visible = useCallback((it: WorkItem): boolean => project === 'all' || it.projectId === project, [project])
@@ -49,6 +56,36 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
   }, [model, visible])
 
   const selected = useMemo(() => model.items.find((i) => i.id === selectedId) ?? null, [model, selectedId])
+
+  /** What "Land all" would land: every landable item currently shown, in the
+   *  same order as the lane. A discovered-but-unregistered project needs a
+   *  one-off "+ Add to Agent Ship" first, so it is left out of the batch. */
+  const landAllTargets = useCallback(
+    (visibleReady: WorkItem[]): LandAllItem[] =>
+      visibleReady.flatMap((item): LandAllItem[] => {
+        const room = roomById.get(item.projectId)
+        if (!room || room.ephemeral) return []
+        if (item.kind === 'branch' && item.branch) {
+          return [{ key: item.id, projectId: item.projectId, projectName: room.name, kind: 'branch', title: item.branch.branch, branch: item.branch.branch }]
+        }
+        if (item.kind === 'session' && item.session) {
+          return [
+            {
+              key: item.id,
+              projectId: item.projectId,
+              projectName: room.name,
+              kind: 'session',
+              title: item.session.name,
+              cwd: item.session.cwd,
+              sessionId: item.session.sessionId,
+              sessionName: item.session.name
+            }
+          ]
+        }
+        return []
+      }),
+    [roomById]
+  )
 
   // --- actions -----------------------------------------------------------------
 
@@ -163,6 +200,44 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
     await world.refreshProjects()
   }
 
+  /** The project's own live Autopilot run, if it has one - this alone is what
+   *  the switch's on/off reflects; there is no separate stored toggle. */
+  const autopilotRunFor = (roomId: string): (typeof runs)[number] | undefined =>
+    runs.find((r) => r.projectId === roomId && r.flowSlug === AUTOPILOT_SLUG && isActive(r.status))
+
+  const toggleAutopilot = async (room: Room): Promise<void> => {
+    const live = autopilotRunFor(room.id)
+    if (live) {
+      void cancel(live.runId)
+      return
+    }
+    let projectId = room.id
+    if (room.ephemeral) {
+      const norm = (p: string): string => p.replace(/[\\/]+/g, '/').toLowerCase()
+      const list = await window.agentShip.addProjectPath(room.path)
+      const added = list.find((p) => norm(p.path) === norm(room.path))
+      if (!added) {
+        setDialog({
+          title: 'Cannot start Autopilot here',
+          subtitle: room.name,
+          warning: [`${room.path} is not a git repository Agent Ship can register.`],
+          taskField: false,
+          submitLabel: 'Close',
+          onSubmit: async () => null
+        })
+        return
+      }
+      await world.refreshProjects()
+      projectId = added.id
+    }
+    // Ensure the project has the flow saved; a copy already there (maybe
+    // user-edited) is left alone - null means "only if it doesn't exist yet".
+    await window.agentShip.saveFlow(projectId, AUTOPILOT_SLUG, fromPattern(AUTOPILOT_PATTERN), null)
+    const { exists } = await window.agentShip.checkPlan(projectId)
+    if (exists) nav.requestRun(projectId, AUTOPILOT_SLUG, { plan: PLAN_FILE })
+    else setPlanSetup({ projectId, projectName: room.name })
+  }
+
   // --- derived numbers ---------------------------------------------------------
 
   const counts = {
@@ -208,7 +283,7 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
             <strong>{formatUsd(model.spendTodayUsd)}</strong> flows today
           </span>
         </div>
-        <FuelGauge weeklyTokens={world.weeklyTokens} budget={world.settings.weeklyTokenBudget} onBudgetChange={(b) => void world.setBudget(b)} />
+        <UsageGauge weeklyTokens={world.weeklyTokens} budget={world.settings.weeklyTokenBudget} onBudgetChange={(b) => void world.setBudget(b)} />
         <button
           type="button"
           className="btn btn-primary"
@@ -263,6 +338,22 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
                     </>
                   )}
                 </div>
+
+                {!room.ephemeral && (
+                  <button
+                    type="button"
+                    className={`fl-autopilot${autopilotRunFor(room.id) ? ' fl-autopilot-on' : ''}`}
+                    onClick={() => void toggleAutopilot(room)}
+                    title={
+                      autopilotRunFor(room.id)
+                        ? 'Autopilot is running: build, test, land, repeat, until the plan is done. Click to stop.'
+                        : `Autopilot: works ${PLAN_FILE} one item at a time - build, test, land, repeat - until an agent judges it done.`
+                    }
+                  >
+                    <span className="fl-autopilot-dot" />
+                    Autopilot{autopilotRunFor(room.id) ? ': on' : ''}
+                  </button>
+                )}
 
                 {open && (
                   <ul className="fl-launch">
@@ -332,6 +423,11 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
                     <header className="fl-lane-head">
                       <h2>{meta.title}</h2>
                       <span className="fl-count">{all.length}</span>
+                      {lane === 'ready' && list.length >= 2 && (
+                        <button type="button" className="btn btn-primary fl-land-all" onClick={() => setLandingAll(landAllTargets(list))}>
+                          Land all {list.length}
+                        </button>
+                      )}
                       <span className="fl-lane-blurb">{meta.blurb}</span>
                     </header>
                     <div className="fl-cards">
@@ -385,6 +481,18 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
       {dialog && <TaskDialog spec={dialog} onClose={() => setDialog(null)} />}
       {landing && <LandDialog target={landing} onClose={() => setLanding(null)} />}
       {committing && <CommitLandDialog target={committing} onClose={() => setCommitting(null)} />}
+      {landingAll && <LandAllDialog items={landingAll} onClose={() => setLandingAll(null)} />}
+      {planSetup && (
+        <PlanSetupDialog
+          target={planSetup}
+          onClose={() => setPlanSetup(null)}
+          onReady={() => {
+            const { projectId } = planSetup
+            setPlanSetup(null)
+            nav.requestRun(projectId, AUTOPILOT_SLUG, { plan: PLAN_FILE })
+          }}
+        />
+      )}
     </div>
   )
 }

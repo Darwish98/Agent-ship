@@ -48,11 +48,19 @@ const joinConfig = z.object({
 })
 
 const gateConfig = z.object({
-  check: z.enum(['command', 'human']).default('command'),
+  check: z.enum(['command', 'human', 'agent']).default('command'),
   /** Shell command; exit 0 = pass. Used when check = command. */
   command: z.string().max(2_000).default(''),
   /** What the reviewer should look at. Used when check = human. */
-  instructions: z.string().max(2_000).default('')
+  instructions: z.string().max(2_000).default(''),
+  /** What to judge, and how to answer. Used when check = agent: an agent
+   *  reads whatever it needs (the repo, a file, an earlier node's result) and
+   *  must reply pass/fail - this is the loop primitive "keep working until
+   *  X" is built from, reusing the gate's own retry cap as the loop's cap. */
+  agentPrompt: z.string().max(20_000).default(''),
+  agentModel: modelSchema.default('default'),
+  /** Tool allow-list for the judging agent (Read/Glob/Grep are always on). */
+  agentTools: z.array(z.string().max(120)).max(50).default([])
 })
 
 const mergeConfig = z.object({

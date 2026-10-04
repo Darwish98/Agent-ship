@@ -7,6 +7,8 @@ import { useRuns } from './RunsProvider'
 export interface RunTarget {
   projectId: string
   slug: string
+  /** Pre-fills matching input fields; still editable, still requires Start. */
+  initialInputs?: Record<string, string>
 }
 
 /** The last thing between a click and real spending. It states, from the file
@@ -16,7 +18,7 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
   const [bp, setBp] = useState<Blueprint | null>(null)
   const [project, setProject] = useState('')
   const [loadError, setLoadError] = useState('')
-  const [inputs, setInputs] = useState<Record<string, string>>({})
+  const [inputs, setInputs] = useState<Record<string, string>>(target.initialInputs ?? {})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -94,6 +96,12 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
                 {summary.humanGates.map((g, i) => (
                   <li key={`h${i}`}>
                     <strong>{g}</strong>: pauses for your approval
+                  </li>
+                ))}
+                {summary.agentGates.map((g, i) => (
+                  <li key={`ag${i}`}>
+                    <strong>{g.label}</strong>: an agent judges whether to continue, up to <strong>{g.maxRetries}</strong> time
+                    {g.maxRetries === 1 ? '' : 's'} (its loop cap){g.maxUsd !== null ? `, at most ${formatUsd(g.maxUsd)} each time` : ''}
                   </li>
                 ))}
                 <li>

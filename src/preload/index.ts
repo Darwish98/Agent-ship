@@ -192,6 +192,13 @@ const api = {
     resolveConflicts: boolean
   ): Promise<StartRunResult> =>
     ipcRenderer.invoke('runs:land', { projectId, branch, baseBranch, testCommand, resolveConflicts }),
+  /** Whether the project already has a plan file for Autopilot to read. */
+  checkPlan: (projectId: string): Promise<{ exists: boolean }> => ipcRenderer.invoke('plan:check', projectId),
+  /** Saves plan text a person pasted themselves. */
+  savePlan: (projectId: string, content: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('plan:save', { projectId, content }),
+  /** Expands an idea into a detailed plan and saves it, as a normal budgeted run. */
+  generatePlan: (projectId: string, idea: string): Promise<StartRunResult> => ipcRenderer.invoke('runs:plan', { projectId, idea }),
   cancelRun: (runId: string): Promise<boolean> => ipcRenderer.invoke('runs:cancel', runId),
   /** Continue an interrupted run from where it stopped. */
   resumeRun: (runId: string): Promise<StartRunResult> => ipcRenderer.invoke('runs:resume', runId),

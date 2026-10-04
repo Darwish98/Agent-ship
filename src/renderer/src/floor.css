@@ -178,6 +178,41 @@
   padding: 0 8px 4px;
 }
 
+.fl-autopilot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin: 0 8px 6px;
+  padding: 3px 10px 3px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.fl-autopilot-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--border-strong);
+}
+
+.fl-autopilot-on {
+  color: #fff;
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+.fl-autopilot-on .fl-autopilot-dot {
+  background: #fff;
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 35%);
+}
+
 .fl-link {
   padding: 0;
   font-family: inherit;
@@ -299,6 +334,12 @@
   flex-basis: 100%;
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.fl-land-all {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 11px;
 }
 
 .fl-cards {
@@ -790,6 +831,106 @@
   background: var(--surface-alt);
   border-top: 1px solid var(--border);
   border-radius: 0 0 9px 9px;
+}
+
+/* --- plan setup (Autopilot switch, when no plan exists yet) -------------- */
+
+.ps-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.ps-tab {
+  flex: 1 1 0;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.ps-tab:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ps-tab-on {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* --- Land all ------------------------------------------------------------- */
+
+.la-rows {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.la-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.la-row + .la-row {
+  border-top: 1px solid var(--border);
+}
+
+.la-row-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.la-row-project {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.la-row-state {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.la-row-detail {
+  flex-basis: 100%;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.la-row-passed .rd-glyph {
+  color: var(--ok);
+}
+
+.la-row-failed .rd-glyph,
+.la-row-plan-failed .rd-glyph,
+.la-row-start-failed .rd-glyph,
+.la-row-budget .rd-glyph,
+.la-row-cancelled .rd-glyph,
+.la-row-interrupted .rd-glyph {
+  color: var(--low);
+}
+
+.la-row-running .rd-glyph,
+.la-row-starting .rd-glyph {
+  color: var(--accent);
 }
 
 .rd-gate-failures {

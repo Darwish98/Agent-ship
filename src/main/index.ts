@@ -13,7 +13,7 @@ import { ClaudeCodeAdapter } from './engine/adapter'
 import * as gitops from './engine/gitops'
 import { detectTestCommand, diffSummary, isClean, refExists, sweepWorktrees, worktreeHolding } from './engine/gitops'
 import { resumableRunIds } from './engine/resume'
-import { buildLandBlueprint, LAND_FLOW } from '../shared/patterns'
+import { buildLandBlueprint, buildPlanBlueprint, LAND_FLOW, PLAN_FLOW } from '../shared/patterns'
 import { RunEngine, worktreeRootFor } from './engine/runner'
 import { RunStore } from './engine/store'
 import { deleteFlow, listFlows, loadFlow, peekFlow, saveFlow } from './flows'
@@ -21,6 +21,7 @@ import { gitState, unmergedBranches } from './git'
 import { hookCommand } from './hookcommand'
 import { installHooks } from './hooks'
 import { installCrashLogging, log, logPath } from './log'
+import { planExists, savePlan } from './plan'
 import { startServer, type AgentEvent } from './server'
 import * as shipyard from './shipyard'
 import { listSessions, weeklyUsage } from './transcripts'
@@ -367,6 +368,33 @@ function registerIpcHandlers(): void {
       })
     }
   )
+  // The Floor's Autopilot switch: whether the project already has a plan to
+  // point Autopilot at, and the two ways to get one there.
+  ipcMain.handle('plan:check', (_evt, projectId: string) => {
+    const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === String(projectId))
+    return { exists: project ? planExists(project.path) : false }
+  })
+  ipcMain.handle('plan:save', (_evt, a: { projectId: string; content: string }) => {
+    const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === a.projectId)
+    if (!project) return { ok: false, error: 'Unknown project.' }
+    return savePlan(project.path, String(a.content ?? ''))
+  })
+  ipcMain.handle('runs:plan', async (_evt, a: { projectId: string; idea: string }) => {
+    if (!engine) return { ok: false, error: 'The run engine is not ready.' }
+    const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === a.projectId)
+    if (!project) return { ok: false, error: 'Unknown project.' }
+    const idea = String(a.idea ?? '').slice(0, 20_000)
+    if (!idea.trim()) return { ok: false, error: 'Describe the idea first.' }
+    return engine.start({
+      projectId: project.id,
+      projectName: project.name,
+      projectPath: project.path,
+      flowSlug: PLAN_FLOW,
+      blueprint: buildPlanBlueprint(),
+      inputs: { idea }
+    })
+  })
+
   ipcMain.handle('runs:cancel', (_evt, runId: string) => engine?.cancel(runId) ?? false)
   // Only the run id crosses IPC; what resumes is the engine's own recorded log.
   ipcMain.handle('runs:resume', async (_evt, runId: string) => {

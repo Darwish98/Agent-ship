@@ -16,8 +16,10 @@ export interface Nav {
   setMode: (m: Mode) => void
   /** Open a flow in the editor, optionally selecting one of its nodes. */
   openFlow: (projectId: string, slug: string, nodeId?: string) => void
-  /** Ask to run a flow: shows the confirmation of exactly what will execute. */
-  requestRun: (projectId: string, slug: string) => void
+  /** Ask to run a flow: shows the confirmation of exactly what will execute.
+   *  `initialInputs` pre-fills the dialog's input fields (still editable, still
+   *  requires the user to press Start). */
+  requestRun: (projectId: string, slug: string, initialInputs?: Record<string, string>) => void
   focus: FlowFocus | null
   clearFocus: () => void
 }

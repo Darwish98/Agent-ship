@@ -50,7 +50,7 @@ function flow(): Blueprint {
     },
     {
       id: 'check', kind: 'gate', label: 'File exists', position: { x: 580, y: 0 },
-      config: { check: 'command', command: 'node -e "process.exit(require(\'fs\').existsSync(\'hello.txt\')?0:1)"', instructions: '' }
+      config: { check: 'command', command: 'node -e "process.exit(require(\'fs\').existsSync(\'hello.txt\')?0:1)"', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     }
   )
   bp.edges.push(
@@ -185,7 +185,7 @@ describe.skipIf(!live)('real claude CLI: parallel tournament', () => {
       },
       {
         id: 'check', kind: 'gate', label: 'File exists', position: { x: 870, y: 0 },
-        config: { check: 'command', command: 'node -e "process.exit(require(\'fs\').existsSync(\'greeting.txt\')?0:1)"', instructions: '' }
+        config: { check: 'command', command: 'node -e "process.exit(require(\'fs\').existsSync(\'greeting.txt\')?0:1)"', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
       },
       {
         id: 'pick', kind: 'join', label: 'Judge', position: { x: 1160, y: 0 }, budget: { maxUsd: 0.12 },
