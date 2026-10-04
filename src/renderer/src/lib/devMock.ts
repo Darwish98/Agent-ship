@@ -10,7 +10,7 @@ import type {
   Settings
 } from '../../../preload'
 import { slugify, usdCeiling } from '../../../shared/blueprint'
-import { buildLandBlueprint, fromPattern, LAND_FLOW, PATTERNS } from '../../../shared/patterns'
+import { buildLandBlueprint, buildPlanBlueprint, fromPattern, LAND_FLOW, PATTERNS, PLAN_FLOW } from '../../../shared/patterns'
 import type { RunEvent } from '../../../shared/runs'
 import { parseBlueprint, type Blueprint } from '../../../shared/schema'
 
@@ -297,6 +297,12 @@ export function installDevMock(): void {
     landBranch: async (projectId, branch, base, testCommand, resolveConflicts) => {
       const project = projects.find((x) => x.id === projectId)!
       return { ok: true, runId: simulateLand(project, buildLandBlueprint({ branch, base, testCommand, resolveConflicts }), branch) }
+    },
+    checkPlan: async () => ({ exists: false }),
+    savePlan: async () => ({ ok: true }),
+    generatePlan: async (projectId, idea) => {
+      const project = projects.find((x) => x.id === projectId)!
+      return { ok: true, runId: simulateRun(project, PLAN_FLOW, buildPlanBlueprint(), { idea }) }
     },
     addProjectPath: async () => projects,
     listFlows: async (projectId) =>

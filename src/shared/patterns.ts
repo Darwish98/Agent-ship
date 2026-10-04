@@ -33,6 +33,8 @@ const agent = (
     maxTokens?: number
     maxUsd?: number
     tools?: string[]
+    /** Roles that only read and judge do not need the most capable model. */
+    model?: 'default' | 'opus' | 'sonnet' | 'haiku' | 'fable'
   } = {}
 ): BlueprintNode => ({
   id,
@@ -43,7 +45,7 @@ const agent = (
     opts.maxTokens || opts.maxUsd ? { maxTokens: opts.maxTokens, maxUsd: opts.maxUsd } : undefined,
   config: {
     role: label,
-    model: 'default',
+    model: opts.model ?? 'default',
     prompt,
     worktree: opts.worktree ?? false,
     access: opts.edit ? 'edit' : 'read',
@@ -87,20 +89,67 @@ export const LAND_FLOW = '__land__'
 export interface LandOptions {
   branch: string
   base: string
-  /** Empty means "no tests": the Test steps are left out and the result is unverified. */
+  /** Empty means "no tests": the Test step is left out and the result is unverified. */
   testCommand: string
   resolveConflicts: boolean
-  /** Dollars the conflict resolver may spend (only used if it is needed). */
+  /** When the MERGED result fails its tests, let an agent fix the code (or the
+   *  tests, if the change legitimately altered what they check) and re-test,
+   *  instead of stopping. Defaults to `resolveConflicts`: one consent for
+   *  "an agent may edit the scratch copy". Needs tests to mean anything. */
+  repairFailures?: boolean
+  /** Dollars the conflict resolver, and each repair attempt, may spend (only used if needed). */
   maxUsd?: number
+}
+
+/** How many times a failing merged result is repaired before landing gives up. */
+export const LAND_REPAIR_ATTEMPTS = 2
+
+/** The brief for the agent that repairs a merged result whose tests fail. It
+ *  works in the scratch copy, so nothing it does touches the base branch
+ *  until the repaired result has passed the same tests again. It is the first
+ *  place the tests ran, so it also has to tell a real failure from an
+ *  environmental one (a timeout or a locked temp file on a loaded machine). */
+function repairPrompt(base: string, tests: string): string {
+  return [
+    `The branch "{{branch}}" has been merged into a scratch copy of "${base}" (your working directory;`,
+    `nothing is committed to "${base}" yet) and the tests FAIL on the merged result.`,
+    '',
+    tests ? `First run \`${tests}\` yourself and look at what fails. Then decide which of these is true:` : 'Look at what fails, then decide which of these is true:',
+    '0. Nothing is wrong with the code or the tests. The failure was environmental: a timeout on a slow machine,',
+    '   a locked or half-deleted temp file (EPERM, EBUSY), a port already in use. If the tests pass when you run them',
+    '   again, or the failing assertion is only about elapsed time, change NOTHING and say so.',
+    '1. The code is wrong. The failing test describes behaviour that should still hold. Fix the code.',
+    '2. The test is out of date. The change intentionally altered what the test asserts. Update the test.',
+    '',
+    'To decide between 1 and 2, find out what the change was for: `git diff HEAD^1 HEAD` shows what the branch',
+    `changed against "${base}"; \`git log\` shows its commits. Read the project's intent too: PLAN.md and any`,
+    'markdown under planning/ or docs/, if they exist.',
+    '',
+    'Rules:',
+    '- Prefer fixing the code whenever the test reflects behaviour the plan still wants.',
+    '- Update a test only when the change deliberately changed what it checks, and keep it as strict as it was.',
+    '- Never delete a test, skip it, loosen an assertion, or special-case the test to make it pass.',
+    '- Make the smallest change that makes the tests honestly pass. Do not refactor anything else.',
+    '- Do not commit, push, rebase or switch branches; the caller commits your edits.',
+    '',
+    'Reply with one short paragraph: which tests failed, whether you changed the code, the tests, or nothing, and why.'
+  ]
+    .filter((l, i, a) => !(l === '' && a[i - 1] === ''))
+    .join('\n')
 }
 
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 /**
- * The pipeline that lands a finished branch: test it, merge it into the base
- * in a scratch copy, test the merged result, and only then advance the base.
+ * The pipeline that lands a finished branch: merge it into the base in a
+ * scratch copy, test that merged result, and only then advance the base.
  * Nothing touches your checkout until the last step, and a failure at any
  * step leaves the base branch exactly as it was.
+ *
+ * The branch is deliberately not tested on its own first. What lands is the
+ * merged result, so that is what has to pass; testing the branch as well ran
+ * the same tree twice whenever the branch already sat on top of the base, and
+ * left a failure there with no way to be repaired.
  */
 export function buildLandBlueprint(o: LandOptions): Blueprint {
   const nodes: BlueprintNode[] = [trigger()]
@@ -113,16 +162,16 @@ export function buildLandBlueprint(o: LandOptions): Blueprint {
     prev = node.id
   }
   const tests = o.testCommand.trim()
-  const gate = (id: string, label: string): BlueprintNode => ({
+  const repair = Boolean(tests) && (o.repairFailures ?? o.resolveConflicts)
+  const gate = (id: string, label: string, maxRetries?: number): BlueprintNode => ({
     id,
     kind: 'gate',
     label,
     position: at(col++),
-    budget: { maxMinutes: 15 },
-    config: { check: 'command', command: tests, instructions: '' }
+    budget: { maxMinutes: 15, ...(maxRetries !== undefined ? { maxRetries } : {}) },
+    config: { check: 'command', command: tests, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
   })
 
-  if (tests) add(gate('test', 'Test the branch'))
   add({
     id: 'merge',
     kind: 'merge',
@@ -131,13 +180,34 @@ export function buildLandBlueprint(o: LandOptions): Blueprint {
     budget: o.resolveConflicts ? { maxUsd: o.maxUsd ?? 1 } : undefined,
     config: { baseBranch: o.base, resolveConflicts: o.resolveConflicts, resolverPrompt: RESOLVER_PROMPT }
   })
-  if (tests) add(gate('verify', 'Test the merged result'))
+  if (tests) add(gate('verify', 'Test the merged result', repair ? LAND_REPAIR_ATTEMPTS : undefined))
+  if (repair) {
+    // verify --fail--> repair --> verify: the gate's own retry loop, working
+    // in the merge's scratch copy. The base only moves after a pass.
+    nodes.push({
+      id: 'repair',
+      kind: 'agent',
+      label: 'Repair the merged result',
+      position: at(col - 1, 1),
+      budget: { maxUsd: o.maxUsd ?? 1 },
+      config: {
+        role: 'Repair',
+        model: 'default',
+        prompt: repairPrompt(o.base, tests),
+        worktree: false,
+        access: 'edit',
+        tools: ['Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git status *)', `Bash(${tests})`],
+        outputSchema: ''
+      }
+    })
+    edges.push(edge('verify', 'repair', 'verdict', 'fail'), edge('repair', 'verify', 'branch'))
+  }
   add({ id: 'land', kind: 'land', label: `Land on ${clip(o.base, 24)}`, position: at(col++), config: { baseBranch: o.base } })
 
   return {
     schemaVersion: SCHEMA_VERSION,
     name: `Land ${clip(o.branch, 48)}`,
-    description: 'Tests a branch, merges it in a scratch copy, tests the result, then advances the base branch.',
+    description: 'Merges a branch in a scratch copy, tests the result (an agent repairs a failing one, up to a cap), then advances the base branch.',
     version: 1,
     defaultBudget: { maxUsd: o.maxUsd ?? 1 },
     inputs: [{ name: 'branch', label: 'Branch to land', required: true }],
@@ -149,7 +219,7 @@ export function buildLandBlueprint(o: LandOptions): Blueprint {
 const LAND_PATTERN: Blueprint = {
   ...buildLandBlueprint({ branch: '<branch>', base: 'main', testCommand: 'npm test', resolveConflicts: true }),
   name: 'Land a branch',
-  description: 'Test a branch, merge it into main in a scratch copy, test the result, then advance main. Set the branch as the run input.'
+  description: 'Merge a branch into main in a scratch copy, test the result, then advance main. Set the branch as the run input.'
 }
 
 // --- patterns that exercise the rest of the model --------------------------
@@ -164,6 +234,7 @@ const PIPELINE: Blueprint = {
   nodes: [
     trigger(),
     agent('plan', 'Planner', 'Write a short, concrete implementation plan for: {{task}}', 1, {
+      model: 'sonnet',
       maxTokens: 150_000,
       maxUsd: 0.5
     }),
@@ -179,14 +250,14 @@ const PIPELINE: Blueprint = {
       label: 'Tests pass',
       position: at(3),
       budget: { maxRetries: 3 },
-      config: { check: 'command', command: 'npm test', instructions: '' }
+      config: { check: 'command', command: 'npm test', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
     agent(
       'review',
       'Reviewer',
       'Review the change on this branch for correctness and risk. Summarise your verdict.\n\nThe builder said:\n{{build.result}}',
       4,
-      { maxTokens: 200_000, maxUsd: 0.5 }
+      { model: 'sonnet', maxTokens: 200_000, maxUsd: 0.5 }
     )
   ],
   edges: [
@@ -228,7 +299,7 @@ const TOURNAMENT: Blueprint = {
       label: 'Tests pass',
       position: at(3),
       budget: { maxRetries: 1 },
-      config: { check: 'command', command: 'npm test', instructions: '' }
+      config: { check: 'command', command: 'npm test', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
     {
       id: 'pick',
@@ -254,7 +325,7 @@ const TOURNAMENT: Blueprint = {
       kind: 'gate',
       label: 'Tests on the merge',
       position: at(6),
-      config: { check: 'command', command: 'npm test', instructions: '' }
+      config: { check: 'command', command: 'npm test', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
     {
       id: 'land',
@@ -276,7 +347,140 @@ const TOURNAMENT: Blueprint = {
   ]
 }
 
-export const PATTERNS: readonly Blueprint[] = [SUPERVISOR, LAND_PATTERN, PIPELINE, TOURNAMENT]
+/** Where the Floor's Autopilot switch reads and writes a project's plan. A
+ *  flow's own `plan` input can point anywhere - this is only the default a
+ *  fresh switch offers to create. */
+export const PLAN_FILE = 'PLAN.md'
+
+/** Brief for the builder: work the plan one item at a time, in whatever order
+ *  makes sense, never all at once - each item becomes its own gated, landed
+ *  branch before the next is even chosen. */
+const AUTOPILOT_BUILD_PROMPT = [
+  'Read the plan at {{plan}}. Look at the current state of the repository',
+  '(recent commits, existing files) to see what has already been done.',
+  '',
+  'Implement the SINGLE next unfinished item from the plan - the smallest',
+  'coherent piece of work you can land on its own. Do not try to do',
+  'everything at once; a later pass will come back for the rest.',
+  '',
+  'When you are done, reply with a short summary of what you implemented and',
+  'which item of the plan it corresponds to.'
+].join('\n')
+
+/** Brief for the loop's own stopping condition: an honest, structured yes/no
+ *  the retry loop already built for gates is driven by. */
+const AUTOPILOT_CHECK_PROMPT = [
+  'Read the plan at {{plan}} and compare it against the current state of the',
+  'repository (recent commits, existing files, what the builder just said:',
+  '{{build.result}}).',
+  '',
+  'Has EVERY item in the plan now been fully implemented and landed? Do not',
+  'guess - look. Reply with JSON: {"done": boolean, "reason": "one or two',
+  'sentences saying what, if anything, is still missing"}.'
+].join('\n')
+
+const AUTOPILOT: Blueprint = {
+  schemaVersion: SCHEMA_VERSION,
+  name: 'Autopilot',
+  description:
+    'Works a plan one item at a time - build, test, merge, land - then asks an agent if the plan is fully done yet, and loops back if not. The loop cap (a retry cap on the last gate) is the safety net.',
+  version: 1,
+  defaultBudget: { maxUsd: 1 },
+  inputs: [{ name: 'plan', label: `Plan file (a path in the repo, e.g. ${PLAN_FILE})`, required: true }],
+  nodes: [
+    trigger(),
+    agent('build', 'Builder', AUTOPILOT_BUILD_PROMPT, 1, { worktree: true, edit: true, maxTokens: 600_000, maxUsd: 1 }),
+    {
+      id: 'tests', kind: 'gate', label: 'Tests pass', position: at(2), budget: { maxRetries: 3 },
+      config: { check: 'command', command: 'npm test', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
+    },
+    { id: 'merge', kind: 'merge', label: 'Merge into main', position: at(3), budget: { maxUsd: 1 }, config: { baseBranch: 'main', resolveConflicts: true, resolverPrompt: RESOLVER_PROMPT } },
+    { id: 'land', kind: 'land', label: 'Land on main', position: at(4), config: { baseBranch: 'main' } },
+    {
+      // The loop primitive: this gate's `fail` edge is "not done yet, go
+      // around again"; its retry cap is the run's hard stop regardless of
+      // what the agent decides, so a confused judge can never run forever.
+      id: 'plancheck', kind: 'gate', label: 'Plan fully done?', position: at(5), budget: { maxRetries: 8, maxUsd: 0.3 },
+      config: { check: 'agent', command: '', instructions: '', agentPrompt: AUTOPILOT_CHECK_PROMPT, agentModel: 'sonnet', agentTools: [] }
+    }
+  ],
+  edges: [
+    edge('start', 'build', 'control'),
+    edge('build', 'tests', 'branch'),
+    edge('tests', 'merge', 'verdict', 'pass'),
+    edge('tests', 'build', 'verdict', 'fail'),
+    edge('merge', 'land', 'branch'),
+    edge('land', 'plancheck', 'branch'),
+    edge('plancheck', 'build', 'verdict', 'fail')
+  ]
+}
+
+export const PATTERNS: readonly Blueprint[] = [SUPERVISOR, LAND_PATTERN, PIPELINE, TOURNAMENT, AUTOPILOT]
+
+export const PLAN_FLOW = '__plan__'
+
+/**
+ * A one-agent flow that turns a rough idea into a detailed plan and saves it
+ * into the repository, so the Floor's Autopilot switch has something to
+ * point at. Writes directly to the live checkout (no worktree) - the same
+ * choice Supervisor already makes for an agent that is meant to touch the
+ * project broadly, and here the "broad" touch is exactly one new file.
+ */
+/** Where a generated project's fuller planning docs live - the same two-tier
+ *  shape this project's own docs use (a narrative overview and a focused
+ *  design doc), under a generically-named folder since "PLATFORM_PLAN" and
+ *  "FLOOR_DESIGN" are this project's own names, not a convention every
+ *  project should share. */
+export const PLANNING_DIR = 'planning'
+export const OVERVIEW_FILE = `${PLANNING_DIR}/OVERVIEW.md`
+export const DESIGN_FILE = `${PLANNING_DIR}/DESIGN.md`
+
+export function buildPlanBlueprint(): Blueprint {
+  const prompt = [
+    `First, check whether ${PLANNING_DIR}/ already holds real planning documents`,
+    `(Glob for ${PLANNING_DIR}/*.md and read what is there). If it does, read them`,
+    `and write ${PLAN_FILE} as a distilled, actionable summary of what they already`,
+    "say - do not overwrite or contradict them, and do not invent a new idea when",
+    'one is already recorded.',
+    '',
+    `Otherwise, this is a new project with nothing written down yet. From the idea`,
+    'below, create THREE files:',
+    '',
+    `1. ${OVERVIEW_FILE} - the fuller plan: what the idea is, its goals, and a`,
+    '   phased roadmap. This is the record of *why*, for a person to read.',
+    `2. ${DESIGN_FILE} - a more detailed design for the core mechanism: how the`,
+    '   main pieces fit together, the key decisions and trade-offs, and honest',
+    '   open questions. Keep it proportional to the idea - a small idea gets a',
+    '   short design doc, not padding. Skip this file only if the idea is truly',
+    '   too small to have a "design" (e.g. a single script).',
+    `3. ${PLAN_FILE} in the repository root (using the Write tool; this is the`,
+    '   file that gets worked from, one item at a time) - a numbered list of',
+    '   concrete, independently implementable and testable items, each small',
+    '   enough that a single agent could build, test and land it in one pass.',
+    '   Order them so earlier items unblock later ones. Be specific: name real',
+    '   files, commands and behaviour where you can, not vague goals. Link back',
+    `   to ${OVERVIEW_FILE} (and ${DESIGN_FILE} if you wrote one) for the`,
+    '   reasoning, the way this rule you are following right now does.',
+    '',
+    "If the idea is ambiguous, write down the assumption you made in the",
+    'overview rather than leaving it open.',
+    '',
+    'The idea:',
+    '{{idea}}',
+    '',
+    'When you are done, reply with a one-line confirmation of which files you wrote.'
+  ].join('\n')
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    name: 'Write a plan',
+    description: `Expands an idea into a plan (or summarises one that already exists) and saves it to ${PLAN_FILE}.`,
+    version: 1,
+    defaultBudget: { maxUsd: 2 },
+    inputs: [{ name: 'idea', label: 'The idea', required: true }],
+    nodes: [trigger(), agent('write', 'Planner', prompt, 1, { model: 'sonnet', edit: true, maxTokens: 600_000, maxUsd: 2 })],
+    edges: [edge('start', 'write', 'control')]
+  }
+}
 
 
 /** A fresh copy the user can edit without touching the shipped one. */

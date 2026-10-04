@@ -39,7 +39,7 @@ function ShellInner(): JSX.Element {
         setFocus({ projectId, slug, nodeId, nonce: Date.now() })
         setMode('blueprint')
       },
-      requestRun: (projectId, slug) => setRunTarget({ projectId, slug }),
+      requestRun: (projectId, slug, initialInputs) => setRunTarget({ projectId, slug, initialInputs }),
       focus,
       clearFocus: () => setFocus(null)
     }),
