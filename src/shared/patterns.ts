@@ -33,6 +33,8 @@ const agent = (
     maxTokens?: number
     maxUsd?: number
     tools?: string[]
+    /** Roles that only read and judge do not need the most capable model. */
+    model?: 'default' | 'opus' | 'sonnet' | 'haiku' | 'fable'
   } = {}
 ): BlueprintNode => ({
   id,
@@ -43,7 +45,7 @@ const agent = (
     opts.maxTokens || opts.maxUsd ? { maxTokens: opts.maxTokens, maxUsd: opts.maxUsd } : undefined,
   config: {
     role: label,
-    model: 'default',
+    model: opts.model ?? 'default',
     prompt,
     worktree: opts.worktree ?? false,
     access: opts.edit ? 'edit' : 'read',
@@ -226,6 +228,7 @@ const PIPELINE: Blueprint = {
   nodes: [
     trigger(),
     agent('plan', 'Planner', 'Write a short, concrete implementation plan for: {{task}}', 1, {
+      model: 'sonnet',
       maxTokens: 150_000,
       maxUsd: 0.5
     }),
@@ -248,7 +251,7 @@ const PIPELINE: Blueprint = {
       'Reviewer',
       'Review the change on this branch for correctness and risk. Summarise your verdict.\n\nThe builder said:\n{{build.result}}',
       4,
-      { maxTokens: 200_000, maxUsd: 0.5 }
+      { model: 'sonnet', maxTokens: 200_000, maxUsd: 0.5 }
     )
   ],
   edges: [
@@ -392,7 +395,7 @@ const AUTOPILOT: Blueprint = {
       // around again"; its retry cap is the run's hard stop regardless of
       // what the agent decides, so a confused judge can never run forever.
       id: 'plancheck', kind: 'gate', label: 'Plan fully done?', position: at(5), budget: { maxRetries: 8, maxUsd: 0.3 },
-      config: { check: 'agent', command: '', instructions: '', agentPrompt: AUTOPILOT_CHECK_PROMPT, agentModel: 'default', agentTools: [] }
+      config: { check: 'agent', command: '', instructions: '', agentPrompt: AUTOPILOT_CHECK_PROMPT, agentModel: 'sonnet', agentTools: [] }
     }
   ],
   edges: [
@@ -468,7 +471,7 @@ export function buildPlanBlueprint(): Blueprint {
     version: 1,
     defaultBudget: { maxUsd: 2 },
     inputs: [{ name: 'idea', label: 'The idea', required: true }],
-    nodes: [trigger(), agent('write', 'Planner', prompt, 1, { edit: true, maxTokens: 600_000, maxUsd: 2 })],
+    nodes: [trigger(), agent('write', 'Planner', prompt, 1, { model: 'sonnet', edit: true, maxTokens: 600_000, maxUsd: 2 })],
     edges: [edge('start', 'write', 'control')]
   }
 }

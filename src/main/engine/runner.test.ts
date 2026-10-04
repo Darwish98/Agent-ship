@@ -7,7 +7,7 @@ import { foldRun, type RunEvent } from '../../shared/runs'
 import type { Blueprint } from '../../shared/schema'
 import { emptyBlueprint, fromPattern, PATTERNS } from '../../shared/patterns'
 import { usdCeiling } from '../../shared/blueprint'
-import { buildClaudeArgs, type AgentAdapter, type StepRequest, type StepResult } from './adapter'
+import { buildClaudeArgs, detectLean, NO_LEAN, type LeanFlags, type AgentAdapter, type StepRequest, type StepResult } from './adapter'
 import { RunEngine } from './runner'
 import { RunStore } from './store'
 
@@ -492,5 +492,55 @@ describe('claude cli arguments', () => {
     const i = a.indexOf('--allowedTools')
     expect(a.slice(i + 1)).toEqual(['Read', 'Glob', 'Grep', 'Bash(npm test)'])
     expect(a).toContain('haiku')
+  })
+
+  describe('lean flags (trim what a headless step loads)', () => {
+    const lean: LeanFlags = { excludeDynamic: true, noSlash: true, strictMcp: true, tools: true }
+    const withLean = (over: Partial<StepRequest> = {}): string[] => buildClaudeArgs({ ...base, ...over }, lean)
+
+    it('adds nothing when the CLI does not list them (an older CLI must never fail on a flag it lacks)', () => {
+      expect(buildClaudeArgs(base, NO_LEAN)).toEqual(buildClaudeArgs(base))
+      const a = buildClaudeArgs(base).join(' ')
+      for (const f of ['--exclude-dynamic', '--disable-slash', '--strict-mcp', '--tools ']) expect(a).not.toContain(f)
+    })
+
+    it('turns off skills, MCP servers and per-machine prompt text for an ordinary step', () => {
+      const a = withLean()
+      expect(a).toContain('--exclude-dynamic-system-prompt-sections')
+      expect(a).toContain('--disable-slash-commands')
+      expect(a).toContain('--strict-mcp-config')
+    })
+
+    it('keeps a skill or an MCP server for a step that was explicitly given one', () => {
+      expect(withLean({ tools: ['Skill(deploy)'] })).not.toContain('--disable-slash-commands')
+      expect(withLean({ tools: ['mcp__figma__get_file'] })).not.toContain('--strict-mcp-config')
+      expect(withLean({ tools: ['mcp__figma__get_file'] })).toContain('--disable-slash-commands') // only the one that is needed is kept
+    })
+
+    it('limits a read-only free-text step to the tools it may actually use, by name', () => {
+      const a = withLean({ access: 'read', tools: ['Bash(git log *)', 'Bash(git diff *)'] })
+      const rest = a.slice(a.indexOf('--tools') + 1)
+      expect(rest.slice(0, rest.findIndex((x) => x.startsWith('--')))).toEqual(['Read', 'Glob', 'Grep', 'Bash'])
+    })
+
+    it('does not narrow built-in tools for an editing step, or for a step that returns structured JSON', () => {
+      expect(withLean({ access: 'edit' })).not.toContain('--tools')
+      expect(withLean({ access: 'read', jsonSchema: '{"type":"object"}' })).not.toContain('--tools')
+    })
+
+    it('still ends with the allow-list, and still never allows prompting', () => {
+      const a = withLean({ tools: ['Bash(npm test)'] })
+      expect(a.slice(a.indexOf('--allowedTools') + 1)).toEqual(['Read', 'Glob', 'Grep', 'Bash(npm test)'])
+      expect(a[a.indexOf('--permission-prompts') + 1]).toBe('none')
+    })
+
+    it('trims nothing under the stand-in CLI used by every other test (it has no --help to ask)', async () => {
+      process.env.AGENT_SHIP_CLAUDE_CMD = JSON.stringify(['node', 'fake.cjs'])
+      try {
+        expect(await detectLean()).toEqual(NO_LEAN)
+      } finally {
+        delete process.env.AGENT_SHIP_CLAUDE_CMD
+      }
+    })
   })
 })

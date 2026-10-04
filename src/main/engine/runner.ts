@@ -52,6 +52,8 @@ const JUDGE_SCHEMA = JSON.stringify({
   properties: { winner: { type: 'integer' }, reason: { type: 'string' } },
   required: ['winner', 'reason']
 })
+/** The steps that only read and judge (the tournament judge, the conflict resolver) do not need the most capable model. */
+const JUDGING_MODEL = 'sonnet'
 const AGENT_GATE_SCHEMA = JSON.stringify({
   type: 'object',
   properties: { done: { type: 'boolean' }, reason: { type: 'string' } },
@@ -626,7 +628,7 @@ export class RunEngine {
           cwd: a.projectPath,
           sessionId: crypto.randomUUID(),
           resume: false,
-          model: 'default',
+          model: JUDGING_MODEL,
           access: 'read',
           tools: [],
           maxUsd: capUsd,
@@ -868,7 +870,7 @@ export class RunEngine {
                 cwd: wt.path,
                 sessionId: crypto.randomUUID(),
                 resume: false,
-                model: 'default',
+                model: JUDGING_MODEL,
                 access: 'edit',
                 // The agent may look and stage; it may not commit, push, or switch branches.
                 tools: ['Bash(git add *)', 'Bash(git status *)', 'Bash(git diff *)', 'Bash(git show *)', 'Bash(git log *)'],

@@ -1,7 +1,7 @@
 // The one place that knows how to talk to Claude Code. Everything above it
 // (the runner) deals in StepRequest / StepResult, so a second vendor later is
 // a second adapter, not a rewrite.
-import { spawn, spawnSync } from 'node:child_process'
+import { execFile, spawn, spawnSync } from 'node:child_process'
 
 export interface StepRequest {
   prompt: string
@@ -42,12 +42,64 @@ export interface AgentAdapter {
 
 const READ_TOOLS = ['Read', 'Glob', 'Grep']
 
+/**
+ * Flags that only trim what a headless step loads before it does any work.
+ * Every call otherwise carries the user's skill listing, every MCP server's
+ * tool definitions, and the full built-in tool set in its prompt, whether or
+ * not the step may use any of it (under `dontAsk`, anything not allow-listed is
+ * denied anyway, so the definitions are pure cost). Each is used only if the
+ * installed CLI lists it in `--help`, so an older CLI never fails on one.
+ */
+export interface LeanFlags {
+  /** Moves cwd/env/git-status text out of the system prompt so identical prompts cache across worktrees. */
+  excludeDynamic: boolean
+  noSlash: boolean
+  strictMcp: boolean
+  /** Restricts the built-in tool set (read-only steps), so unused tool schemas are not sent. */
+  tools: boolean
+}
+export const NO_LEAN: LeanFlags = { excludeDynamic: false, noSlash: false, strictMcp: false, tools: false }
+
+let leanCache: Promise<LeanFlags> | undefined
+
+/** Reads `claude --help` once. The test seam (a stand-in CLI) never trims anything. */
+export function detectLean(): Promise<LeanFlags> {
+  if (process.env.AGENT_SHIP_CLAUDE_CMD) return Promise.resolve(NO_LEAN)
+  leanCache ??= new Promise<LeanFlags>((resolve) => {
+    execFile('claude', ['--help'], { timeout: 15_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
+      if (err && !stdout) return resolve(NO_LEAN)
+      const has = (flag: string): boolean => stdout.includes(flag)
+      resolve({
+        excludeDynamic: has('--exclude-dynamic-system-prompt-sections'),
+        noSlash: has('--disable-slash-commands'),
+        strictMcp: has('--strict-mcp-config'),
+        tools: has('--tools')
+      })
+    })
+  })
+  return leanCache
+}
+
+/** `Bash(git log *)` -> `Bash`: the built-in tool a permission rule belongs to. */
+const toolName = (rule: string): string => rule.replace(/\(.*$/s, '')
+
 /** Exported for tests: the exact CLI surface the engine relies on (see
  *  planning/spikes/claude-cli.md). The prompt itself goes over stdin, never argv. */
-export function buildClaudeArgs(req: StepRequest): string[] {
+export function buildClaudeArgs(req: StepRequest, lean: LeanFlags = NO_LEAN): string[] {
   const args = ['-p', '--output-format', 'json']
   args.push(req.resume ? '--resume' : '--session-id', req.sessionId)
   if (req.model && req.model !== 'default') args.push('--model', req.model)
+  if (lean.excludeDynamic) args.push('--exclude-dynamic-system-prompt-sections')
+  // Skills and MCP tools are only kept for a step that was explicitly given one.
+  if (lean.noSlash && !req.tools.some((t) => toolName(t) === 'Skill')) args.push('--disable-slash-commands')
+  if (lean.strictMcp && !req.tools.some((t) => t.startsWith('mcp__'))) args.push('--strict-mcp-config')
+  // A read-only step with free-text output needs no Write/Edit/Task/Web tools.
+  // Not applied with a JSON schema: structured output is delivered through a
+  // tool of the CLI's own, and whether `--tools` leaves that one in place has
+  // not been verified (scripts/probe-tokens.mjs checks it).
+  if (lean.tools && req.access === 'read' && !req.jsonSchema.trim()) {
+    args.push('--tools', ...new Set([...READ_TOOLS, ...req.tools.map(toolName)]))
+  }
   // Nothing is ever allowed to prompt: a step that would ask is denied, and
   // the denial shows up in its result rather than hanging a headless run.
   args.push('--permission-mode', req.access === 'edit' ? 'acceptEdits' : 'dontAsk')
@@ -98,7 +150,8 @@ interface CliJson {
 }
 
 export class ClaudeCodeAdapter implements AgentAdapter {
-  run(req: StepRequest): Promise<StepResult> {
+  async run(req: StepRequest): Promise<StepResult> {
+    const lean = await detectLean()
     const [bin, ...prefix] = commandPrefix()
     const base: StepResult = {
       ok: false,
@@ -114,7 +167,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     return new Promise((resolve) => {
       if (req.signal.aborted) return resolve({ ...base, cancelled: true, error: 'Cancelled before it started.' })
 
-      const child = spawn(bin, [...prefix, ...buildClaudeArgs(req)], {
+      const child = spawn(bin, [...prefix, ...buildClaudeArgs(req, lean)], {
         cwd: req.cwd,
         windowsHide: true,
         env: { ...process.env, ...req.env },
