@@ -1,5 +1,5 @@
 import type { JSX, ReactNode, SyntheticEvent } from 'react'
-import { pendingWork, type Verification, type WorkItem } from '../../../shared/floor'
+import { pendingWork, type TaskPart, type Verification, type WorkItem } from '../../../shared/floor'
 import { LAND_FLOW, PLAN_FLOW } from '../../../shared/patterns'
 import { isActive } from '../../../shared/runs'
 import { AgentSprite } from '../components/AgentSprite'
@@ -51,7 +51,22 @@ export function VerifyBadge({ v }: { v: Verification }): JSX.Element {
   )
 }
 
-function Shell({ item, selected, projectName, actions, kind, children }: CardProps & { kind: string; children: ReactNode }): JSX.Element {
+/** What a task is made of, as the small tags shown on its card and in its drawer. */
+export const PART_LABEL: Record<TaskPart['kind'], string> = { session: 'Session', flow: 'Flow', branch: 'Branch', landing: 'Landing' }
+
+export function PartTags({ parts }: { parts: TaskPart[] }): JSX.Element {
+  return (
+    <span className="fc-parts">
+      {parts.map((p, i) => (
+        <span key={i} className={`fc-part fc-part-${p.kind}`} title={p.label}>
+          {PART_LABEL[p.kind]}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+function Shell({ item, selected, projectName, actions, children }: CardProps & { children: ReactNode }): JSX.Element {
   return (
     <div
       // `fc-k-*` (not `fc-session` / `fc-branch`, which are inner elements' classes:
@@ -68,12 +83,13 @@ function Shell({ item, selected, projectName, actions, kind, children }: CardPro
       }}
     >
       <div className="fc-head">
-        <span className="fc-kind">{kind}</span>
         <strong className="fc-title" title={item.title}>
           {item.title}
         </strong>
         {projectName && <span className="fc-proj">{projectName}</span>}
       </div>
+      {/* One card per task: the session, flow, branch and landing it is made of. */}
+      <PartTags parts={item.parts} />
       {/* The same four-stage story on every card, whatever it is made of. */}
       <PipelineStrip stages={item.pipeline} compact />
       {children}
@@ -87,13 +103,18 @@ export function RunCard(props: CardProps): JSX.Element {
   const { item, actions } = props
   const run = item.run!
   return (
-    <Shell {...props} kind="FLOW">
+    <Shell {...props}>
       <SpendMeter spent={run.spentUsd} ceiling={run.ceilingUsd} />
       {item.reasons.length > 0 ? (
         <p className="fc-reason">{truncate(item.reasons[0], 140)}</p>
       ) : (
         <p className="fc-sub">
           {item.subtitle} · {formatAgo(item.updatedAt)}
+        </p>
+      )}
+      {item.branch && (
+        <p className="fc-branch" title="The work this flow left on a branch">
+          {item.branch.branch} · {item.branch.ahead} commit{item.branch.ahead === 1 ? '' : 's'}
         </p>
       )}
       <div className="fc-actions" onClick={stop}>
@@ -133,7 +154,7 @@ export function SessionCard(props: CardProps): JSX.Element {
   const left = s.contextLimit ? Math.max(0, Math.min(1, 1 - s.contextTokens / s.contextLimit)) : 1
   const tone = left > 0.4 ? 'ok' : left > 0.15 ? 'warn' : 'low'
   return (
-    <Shell {...props} kind="SESSION">
+    <Shell {...props}>
       <div className="fc-session">
         <div className={`fc-sprite${s.live ? ' is-live' : ''}`}>
           <AgentSprite agentKey={s.sessionId} role={s.role} isOrchestrator={/orchestrat/i.test(s.name)} size={30} dimmed={!s.live} />
@@ -186,7 +207,7 @@ export function BranchCard(props: CardProps): JSX.Element {
   const landing = item.landRun && isActive(item.landRun.status)
   const failedLanding = item.lane === 'needs' && item.landRun
   return (
-    <Shell {...props} kind="BRANCH">
+    <Shell {...props}>
       {item.reasons.length > 0 ? (
         <p className="fc-reason">{truncate(item.reasons[0], 150)}</p>
       ) : (

@@ -52,6 +52,20 @@ Why this is different from a list of sessions:
 
 Deliberately **not** built: a spatial map (no information density), free-drag layout, or a pixel-crew wandering animation. The pixel sprites remain as small avatars on session cards, because they give each agent a stable, recognisable identity at a glance.
 
+### One task, one card (2026-10-04)
+
+The three nouns above are not three kinds of card. A session or a flow run produces a branch, and a landing attempt moves that branch, so they are one piece of work seen at different moments. Showing each as its own card put the same task on the board two or three times: a session still working on a branch next to that branch's own card, a failed flow next to the branch it left, a finished landing as a "Landed" flow beside the session that asked for it.
+
+`deriveFloor` now folds everything that belongs together into one **task card**:
+
+- **Links:** session -> its branch (`session.branch`); flow run -> the branch it produced; landing run -> its branch, or the session it was started for.
+- **Lane and buttons come from the most urgent part.** Needs you beats Running beats Ready beats Done; on a tie, landing a branch beats a session, which beats the flow that happened to produce it. So a failed flow outranks its branch being landable, and a session still working outranks its branch being ready. The card's `kind` is that part, which is what its main button acts on.
+- **The id is the task's**, not the part's: a selected card stays selected when its session finishes and the branch takes over.
+- **A card lists its parts** as small tags under the title (Session, Flow, Branch, Landing) instead of one FLOW / BRANCH / SESSION badge, and the drawer shows a section for each part present.
+- The title is the session's name when there is one, otherwise the flow's or the branch's.
+
+Unrelated work stays separate: only a real link (same branch, same session, same landing run) merges cards.
+
 ## 4. How the Floor and Blueprints work together
 
 Three nouns, one loop:
