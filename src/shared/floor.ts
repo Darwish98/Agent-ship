@@ -159,7 +159,8 @@ export function pipelineForRun(run: RunView): PipelineStage[] {
     land: { states: [], names: [] }
   }
   for (const n of run.blueprint.nodes) {
-    const id: StageId | null = n.kind === 'agent' ? 'build' : n.kind === 'gate' ? 'test' : n.kind === 'merge' ? 'merge' : n.kind === 'land' ? 'land' : null
+    // In a landing run the only agent is the one repairing a failing merge, which is part of testing.
+    const id: StageId | null = n.kind === 'agent' ? (run.flowSlug === LAND_FLOW ? 'test' : 'build') : n.kind === 'gate' ? 'test' : n.kind === 'merge' ? 'merge' : n.kind === 'land' ? 'land' : null
     if (!id) continue
     groups[id].states.push(run.nodes[n.id]?.state ?? 'idle')
     groups[id].names.push(n.label || n.kind)

@@ -402,6 +402,20 @@ export class RunEngine {
         }
       }
 
+      // An agent working in the merge's scratch copy (a repair after the
+      // merged result failed its tests) edits the very result that gets tested
+      // and landed. Commit its edits on top of the merge and move the result to
+      // them, so the next test and Land see exactly what it left. The base
+      // branch itself is still untouched until Land.
+      if (integ && !node.config.worktree && stepCwd === integ.wt.path) {
+        try {
+          if (await git.commitAll(stepCwd, `agentship: ${node.label || node.config.role} (${bp.name})`)) integ.sha = await git.head(stepCwd)
+        } catch (err) {
+          res.ok = false
+          res.error = `Could not commit the repair: ${(err as Error).message}`
+        }
+      }
+
       const overTokens = node.budget?.maxTokens ?? bp.defaultBudget.maxTokens
       const tokenBust = Boolean(overTokens && res.tokens > overTokens)
       const passed = res.ok && !tokenBust

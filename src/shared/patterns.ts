@@ -90,8 +90,48 @@ export interface LandOptions {
   /** Empty means "no tests": the Test steps are left out and the result is unverified. */
   testCommand: string
   resolveConflicts: boolean
-  /** Dollars the conflict resolver may spend (only used if it is needed). */
+  /** When the MERGED result fails its tests, let an agent fix the code (or the
+   *  tests, if the change legitimately altered what they check) and re-test,
+   *  instead of stopping. Defaults to `resolveConflicts`: one consent for
+   *  "an agent may edit the scratch copy". Needs tests to mean anything. */
+  repairFailures?: boolean
+  /** Dollars the conflict resolver, and each repair attempt, may spend (only used if needed). */
   maxUsd?: number
+}
+
+/** How many times a failing merged result is repaired before landing gives up. */
+export const LAND_REPAIR_ATTEMPTS = 2
+
+/** The brief for the agent that repairs a merged result whose tests fail. It
+ *  works in the scratch copy, so nothing it does touches the base branch
+ *  until the repaired result has passed the same tests again. */
+function repairPrompt(base: string, tests: string): string {
+  return [
+    `The branch "{{branch}}" has been merged into a scratch copy of "${base}" (your working directory;`,
+    `nothing is committed to "${base}" yet) and the tests now FAIL on the merged result. They passed on`,
+    'the branch alone, so the failure comes from the combination, or from behaviour the change',
+    'deliberately altered.',
+    '',
+    'Work out which of these is true, then fix it:',
+    '1. The code is wrong. The failing test describes behaviour that should still hold. Fix the code.',
+    '2. The test is out of date. The change intentionally altered what the test asserts. Update the test.',
+    '',
+    'To decide, find out what the change was for: `git diff HEAD^1 HEAD` shows what the branch changed',
+    `against "${base}"; \`git log\` shows its commits. Read the project's intent too: PLAN.md and any`,
+    'markdown under planning/ or docs/, if they exist.',
+    '',
+    'Rules:',
+    '- Prefer fixing the code whenever the test reflects behaviour the plan still wants.',
+    '- Update a test only when the change deliberately changed what it checks, and keep it as strict as it was.',
+    '- Never delete a test, skip it, loosen an assertion, or special-case the test to make it pass.',
+    '- Make the smallest change that makes the tests honestly pass. Do not refactor anything else.',
+    '- Do not commit, push, rebase or switch branches; the caller commits your edits.',
+    tests ? `- Run \`${tests}\` yourself to confirm before you finish.` : '',
+    '',
+    'Reply with one short paragraph: which tests failed, whether you changed the code or the tests, and why.'
+  ]
+    .filter((l, i, a) => !(l === '' && a[i - 1] === ''))
+    .join('\n')
 }
 
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
@@ -113,12 +153,13 @@ export function buildLandBlueprint(o: LandOptions): Blueprint {
     prev = node.id
   }
   const tests = o.testCommand.trim()
-  const gate = (id: string, label: string): BlueprintNode => ({
+  const repair = Boolean(tests) && (o.repairFailures ?? o.resolveConflicts)
+  const gate = (id: string, label: string, maxRetries?: number): BlueprintNode => ({
     id,
     kind: 'gate',
     label,
     position: at(col++),
-    budget: { maxMinutes: 15 },
+    budget: { maxMinutes: 15, ...(maxRetries !== undefined ? { maxRetries } : {}) },
     config: { check: 'command', command: tests, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
   })
 
@@ -131,13 +172,34 @@ export function buildLandBlueprint(o: LandOptions): Blueprint {
     budget: o.resolveConflicts ? { maxUsd: o.maxUsd ?? 1 } : undefined,
     config: { baseBranch: o.base, resolveConflicts: o.resolveConflicts, resolverPrompt: RESOLVER_PROMPT }
   })
-  if (tests) add(gate('verify', 'Test the merged result'))
+  if (tests) add(gate('verify', 'Test the merged result', repair ? LAND_REPAIR_ATTEMPTS : undefined))
+  if (repair) {
+    // verify --fail--> repair --> verify: the gate's own retry loop, working
+    // in the merge's scratch copy. The base only moves after a pass.
+    nodes.push({
+      id: 'repair',
+      kind: 'agent',
+      label: 'Repair the merged result',
+      position: at(col - 1, 1),
+      budget: { maxUsd: o.maxUsd ?? 1 },
+      config: {
+        role: 'Repair',
+        model: 'default',
+        prompt: repairPrompt(o.base, tests),
+        worktree: false,
+        access: 'edit',
+        tools: ['Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git status *)', `Bash(${tests})`],
+        outputSchema: ''
+      }
+    })
+    edges.push(edge('verify', 'repair', 'verdict', 'fail'), edge('repair', 'verify', 'branch'))
+  }
   add({ id: 'land', kind: 'land', label: `Land on ${clip(o.base, 24)}`, position: at(col++), config: { baseBranch: o.base } })
 
   return {
     schemaVersion: SCHEMA_VERSION,
     name: `Land ${clip(o.branch, 48)}`,
-    description: 'Tests a branch, merges it in a scratch copy, tests the result, then advances the base branch.',
+    description: 'Tests a branch, merges it in a scratch copy, tests the result (an agent repairs a failing merge, up to a cap), then advances the base branch.',
     version: 1,
     defaultBudget: { maxUsd: o.maxUsd ?? 1 },
     inputs: [{ name: 'branch', label: 'Branch to land', required: true }],

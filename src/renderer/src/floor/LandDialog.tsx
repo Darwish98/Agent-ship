@@ -77,6 +77,11 @@ export function LandDialog({ target, onClose }: { target: LandTarget; onClose: (
                 <li>
                   <strong>Test the merged result</strong>
                   {tests ? '. This is what catches two good changes that break each other.' : ' is skipped.'}
+                  {tests && resolve
+                    ? ' If it fails, an agent works out whether the code or an out-of-date test is wrong, fixes it in the scratch copy, and it is tested again (up to 2 repairs, up to $1 each).'
+                    : tests
+                      ? ' If it fails, landing stops and nothing changes.'
+                      : ''}
                 </li>
                 <li>
                   <strong>Land</strong>: only now does <code>{plan.baseBranch}</code> move.{' '}
@@ -104,7 +109,7 @@ export function LandDialog({ target, onClose }: { target: LandTarget; onClose: (
 
             <label className="insp-check ld-check">
               <input type="checkbox" checked={resolve} onChange={(e) => setResolve(e.target.checked)} />
-              Let an agent resolve merge conflicts
+              Let an agent resolve merge conflicts and repair failing tests
             </label>
           </>
         )}

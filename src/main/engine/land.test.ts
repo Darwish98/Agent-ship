@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { unrunnableReasons, usdCeiling } from '../../shared/blueprint'
 import { buildLandBlueprint, fromPattern, PATTERNS } from '../../shared/patterns'
 import { foldRun, type RunEvent, type RunView } from '../../shared/runs'
 import type { AgentAdapter, StepRequest, StepResult } from './adapter'
@@ -77,7 +78,7 @@ describe('landing a branch', () => {
     const { v } = await land()
     expect(v.status).toBe('passed')
     expect(Object.fromEntries(Object.entries(v.nodes).map(([k, n]) => [k, n.state]))).toEqual({
-      start: 'idle', test: 'passed', merge: 'passed', verify: 'passed', land: 'passed'
+      start: 'idle', test: 'passed', merge: 'passed', verify: 'passed', repair: 'idle', land: 'passed' // repair exists but was never needed
     })
     // main moved, with a real merge commit, and the files on disk moved with it.
     expect(has('main', 'feat.txt')).toBe(true)
@@ -164,6 +165,84 @@ describe('landing a branch', () => {
     await engine.whenDone(r.runId)
     expect(foldRun(events)!.status).toBe('passed')
     expect(has('main', 'feat.txt')).toBe(true)
+  })
+})
+
+describe('repairing a merged result that fails its tests', () => {
+  // main gained a file the branch has never seen. Branch alone: passes. Merged: both present: fails.
+  const bothPresentFails = `node -e "const f=require('fs');process.exit(f.existsSync('feat.txt')&&f.existsSync('base-only.txt')?1:0)"`
+  const isRepair = (r: StepRequest): boolean => r.env.AGENT_SHIP_ROLE === 'Repair'
+  beforeEach(() => {
+    write('base-only.txt', 'x\n')
+    commitAll('main moves on')
+  })
+
+  it('lets an agent fix the scratch copy, re-tests, and lands the repaired result - not the failing one', async () => {
+    const adapter = new Fake((r) => {
+      if (isRepair(r)) {
+        fs.rmSync(path.join(r.cwd, 'base-only.txt'))
+        write('README.md', 'line one\nline two\nrepaired\n', r.cwd)
+      }
+      return ok({ result: 'Removed the conflicting file.' })
+    })
+    const { v, events } = await land({ test: bothPresentFails, adapter })
+
+    expect(v.status).toBe('passed')
+    expect(v.nodes.verify.attempts).toBe(2) // failed once, repaired, passed
+    expect(v.nodes.repair.state).toBe('passed')
+    expect(adapter.reqs).toHaveLength(1)
+    // The repair worked in the merge's scratch copy, with edit access, and was told what to weigh.
+    const req = adapter.reqs[0]
+    expect(req.access).toBe('edit')
+    expect(req.cwd).toContain('wt')
+    expect(req.prompt).toContain('feat/x')
+    expect(req.prompt).toContain('PLAN.md')
+    expect(req.prompt).toMatch(/Update a test only when the change deliberately changed/)
+    expect(req.prompt).toMatch(/Never delete a test/)
+    expect(req.prompt).toContain('A previous check failed') // the failing gate's output is handed over
+    // What landed is the REPAIRED result, on top of a real merge commit.
+    expect(has('main', 'feat.txt')).toBe(true)
+    expect(has('main', 'base-only.txt')).toBe(false)
+    expect(git('show', 'main:README.md')).toContain('repaired')
+    expect(git('log', '--format=%s', '-3', 'main')).toContain('Repair the merged result')
+    expect(git('status', '--porcelain')).toBe('')
+    expect(worktreeCount()).toBe(1)
+    // The first verify attempt really did fail before anything was repaired.
+    const gates = events.filter((e) => e.type === 'gate.result' && e.nodeId === 'verify')
+    expect(gates.map((g) => g.type === 'gate.result' && g.pass)).toEqual([false, true])
+  })
+
+  it('gives up after its attempts if the repair does not help, and main is untouched', async () => {
+    const before = git('rev-parse', 'main')
+    const adapter = new Fake(() => ok({ result: 'I changed nothing.' }))
+    const { v } = await land({ test: bothPresentFails, adapter })
+    expect(v.status).toBe('failed')
+    expect(v.reason).toBe('Gate "Test the merged result" still failing after 3 attempts (retry cap 2).')
+    expect(adapter.reqs).toHaveLength(2) // a repair between each of the three tests
+    expect(v.nodes.land.state).toBe('idle')
+    expect(git('rev-parse', 'main')).toBe(before)
+    expect(worktreeCount()).toBe(1)
+  })
+
+  it('does not repair when the agent has not been allowed to edit (the checkbox is off): fails at once, as before', async () => {
+    const adapter = new Fake()
+    const { v } = await land({ test: bothPresentFails, adapter, resolve: false })
+    expect(v.status).toBe('failed')
+    expect(v.nodes.verify.attempts).toBe(1)
+    expect(v.nodes.repair).toBeUndefined()
+    expect(adapter.reqs).toHaveLength(0)
+  })
+
+  it('has no repair step when there are no tests to fail', () => {
+    const bp = buildLandBlueprint({ branch: 'feat/x', base: 'main', testCommand: '', resolveConflicts: true })
+    expect(bp.nodes.map((n) => n.id)).toEqual(['start', 'merge', 'land'])
+  })
+
+  it('keeps the whole landing under a ceiling that includes every repair attempt', () => {
+    const bp = buildLandBlueprint({ branch: 'feat/x', base: 'main', testCommand: 'npm test', resolveConflicts: true, maxUsd: 1 })
+    // merge resolver $1 once + repair $1 per loop pass (retry cap 2 => counted 3x) = $4
+    expect(usdCeiling(bp)).toBeCloseTo(4)
+    expect(unrunnableReasons(bp)).toEqual([])
   })
 })
 
