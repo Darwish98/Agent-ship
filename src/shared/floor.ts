@@ -316,6 +316,9 @@ export function deriveFloor(input: FloorInput): FloorModel {
       if (landFor(key) === run) continue // shown on the branch card
       // An old attempt at a branch that has moved on is history, not a to-do.
       if (branchKeys.has(key)) continue
+      // Likewise one that a later attempt at the same branch replaced: a red
+      // card for a landing that has since succeeded is noise, not a to-do.
+      if (landByBranch.get(key) !== run) continue
     }
     const item = runItem(run, acknowledged)
     // A finished run whose branch is still unmerged is represented by that

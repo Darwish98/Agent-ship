@@ -268,6 +268,19 @@ describe('the pipeline inside every task', () => {
     expect(f.byLane.done[0].subtitle).toBe('Landed')
     expect(states(f.byLane.done[0])).toBe('build:passed test:passed merge:passed land:passed')
   })
+
+  it('earlier failed attempts do not linger in Needs you once a later attempt at the same branch landed', () => {
+    const failed1 = landRun({ upTo: 'verify', fail: 'verify', end: 'failed', startedAt: NOW - 3 * 60_000 })
+    const failed2 = landRun({ upTo: 'merge', fail: 'merge', end: 'failed', startedAt: NOW - 2 * 60_000 })
+    const landed = landRun({ end: 'passed', startedAt: NOW - 60_000 })
+    const f = derive({ runs: [failed1, failed2, landed], branches: [] })
+    expect(f.byLane.needs).toHaveLength(0)
+    expect(f.byLane.done.map((i) => i.subtitle)).toEqual(['Landed'])
+    // Without a later success, the newest failure alone is what needs you.
+    const g = derive({ runs: [failed1, failed2], branches: [] })
+    expect(g.byLane.needs).toHaveLength(1)
+    expect(g.byLane.needs[0].run?.runId).toBe(failed2.runId)
+  })
 });
 
 describe('an open session that has finished its turn', () => {
