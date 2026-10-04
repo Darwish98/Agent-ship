@@ -59,7 +59,7 @@ export function useHandledByHand(agents: Agent[], runs: RunView[]): Readonly<Rec
           changed = true
         }
       } else if (before) {
-        if (whoClearedIt(before, a.gitHead, runs, a.sessionId) === 'hand') next[a.sessionId] = now
+        if (whoClearedIt(before, a.gitHead, runs, a.sessionId, a.branch) === 'hand') next[a.sessionId] = now
         delete episodes.current[a.sessionId]
         changed = true
       }
