@@ -200,6 +200,14 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
     await world.refreshProjects()
   }
 
+  const removeProject = async (room: Room): Promise<void> => {
+    const live = runs.some((r) => r.projectId === room.id && isActive(r.status))
+    const note = live ? ' It has a run in progress; that run keeps going.' : ''
+    if (!window.confirm(`Remove "${room.name}" from Agent Ship?${note} Nothing on disk is deleted: its files, branches, flows and past runs stay as they are. You can add it again any time.`)) return
+    if (project === room.id) setProject('all')
+    await world.removeRoom(room)
+  }
+
   /** The project's own live Autopilot run, if it has one - this alone is what
    *  the switch's on/off reflects; there is no separate stored toggle. */
   const autopilotRunFor = (roomId: string): (typeof runs)[number] | undefined =>
@@ -233,8 +241,8 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
     // Ensure the project has the flow saved; a copy already there (maybe
     // user-edited) is left alone - null means "only if it doesn't exist yet".
     await window.agentShip.saveFlow(projectId, AUTOPILOT_SLUG, fromPattern(AUTOPILOT_PATTERN), null)
-    const { exists } = await window.agentShip.checkPlan(projectId)
-    if (exists) nav.requestRun(projectId, AUTOPILOT_SLUG, { plan: PLAN_FILE })
+    const { exists, file } = await window.agentShip.checkPlan(projectId)
+    if (exists) nav.requestRun(projectId, AUTOPILOT_SLUG, { plan: file ?? PLAN_FILE })
     else setPlanSetup({ projectId, projectName: room.name })
   }
 
@@ -320,6 +328,10 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
                   <span className="fl-proj-sub">
                     {git?.isRepo ? `${git.branch}${git.dirtyFiles ? ` · ${git.dirtyFiles} changed` : ''}` : 'not a git repo'}
                   </span>
+                </button>
+
+                <button type="button" className="fl-proj-remove" onClick={() => void removeProject(room)} title="Remove from Agent Ship (nothing on disk is deleted)" aria-label={`Remove ${room.name}`}>
+                  ×
                 </button>
 
                 <div className="fl-proj-actions">

@@ -21,7 +21,8 @@ import { gitState, unmergedBranches } from './git'
 import { hookCommand } from './hookcommand'
 import { installHooks } from './hooks'
 import { installCrashLogging, log, logPath } from './log'
-import { planExists, savePlan } from './plan'
+import { findPlan, savePlan } from './plan'
+import { InterviewManager } from './interview'
 import { startServer, type AgentEvent } from './server'
 import * as shipyard from './shipyard'
 import { listSessions, weeklyUsage } from './transcripts'
@@ -31,6 +32,7 @@ let mainWindow: BrowserWindow | null = null
 /** Conservative on purpose: these end up in git commands and run labels. */
 const BRANCH_NAME = /^[A-Za-z0-9._/@#+-]{1,200}$/
 let engine: RunEngine | null = null
+let interviews: InterviewManager | null = null
 let runStore: RunStore | null = null
 
 app.setName('Agent Ship')
@@ -179,6 +181,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle('shipyard:removeProject', (_evt, id: string) =>
     shipyard.removeProject(userDataDir(), id)
   )
+
+  ipcMain.handle('shipyard:hiddenProjects', () => shipyard.loadHiddenProjects(userDataDir()))
+  ipcMain.handle('shipyard:hideProjectPath', (_evt, projectPath: string) => shipyard.hideProjectPath(userDataDir(), String(projectPath)))
 
   ipcMain.handle('settings:get', () => shipyard.loadSettings(userDataDir()))
   ipcMain.handle('settings:set', (_evt, patch: Partial<shipyard.Settings>) =>
@@ -373,7 +378,8 @@ function registerIpcHandlers(): void {
   // point Autopilot at, and the two ways to get one there.
   ipcMain.handle('plan:check', (_evt, projectId: string) => {
     const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === String(projectId))
-    return { exists: project ? planExists(project.path) : false }
+    const file = project ? findPlan(project.path) : null
+    return { exists: file !== null, file }
   })
   ipcMain.handle('plan:save', (_evt, a: { projectId: string; content: string }) => {
     const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === a.projectId)
@@ -395,6 +401,22 @@ function registerIpcHandlers(): void {
       inputs: { idea }
     })
   })
+
+  // The planning interview: one resumed Claude session per interview. Only
+  // the project id crosses IPC; the path is looked up here.
+  const projectById = (id: string) => shipyard.loadProjects(userDataDir()).find((p) => p.id === String(id))
+  ipcMain.handle('interview:start', async (_evt, a: { projectId: string; idea: string }) => {
+    const project = projectById(a.projectId)
+    if (!project) return null
+    interviews ??= new InterviewManager(new ClaudeCodeAdapter())
+    return interviews.start({ projectId: project.id, projectPath: project.path, projectName: project.name, idea: String(a.idea ?? '').slice(0, 20_000) })
+  })
+  ipcMain.handle('interview:answer', (_evt, a: { id: string; text: string }) => interviews?.answer(String(a.id), String(a.text ?? '')) ?? null)
+  ipcMain.handle('interview:finish', (_evt, id: string) => interviews?.finish(String(id)) ?? null)
+  ipcMain.handle('interview:edit', (_evt, a: { id: string; key: string; text: string }) => interviews?.edit(String(a.id), String(a.key), String(a.text ?? '')) ?? null)
+  ipcMain.handle('interview:cancel', (_evt, id: string) => interviews?.cancel(String(id)) ?? null)
+  ipcMain.handle('interview:preview', (_evt, id: string) => interviews?.preview(String(id)) ?? null)
+  ipcMain.handle('interview:write', (_evt, a: { id: string; overwrite: boolean }) => interviews?.write(String(a.id), a.overwrite === true) ?? { ok: false, error: 'That interview is gone.' })
 
   ipcMain.handle('runs:cancel', (_evt, runId: string) => engine?.cancel(runId) ?? false)
   // Only the run id crosses IPC; what resumes is the engine's own recorded log.

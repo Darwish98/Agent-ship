@@ -2,9 +2,9 @@
 
 This is the working plan Autopilot (the Floor switch) builds from. It is a
 distilled, actionable TODO list, not the project's full record — that lives
-in [`planning/PLATFORM_PLAN.md`](planning/PLATFORM_PLAN.md) (market analysis,
+in [`PLATFORM_PLAN.md`](PLATFORM_PLAN.md) (market analysis,
 architecture, every phase's design decisions, the honest evaluation) and
-[`planning/FLOOR_DESIGN.md`](planning/FLOOR_DESIGN.md) (the Floor UI). Read those for
+[`FLOOR_DESIGN.md`](FLOOR_DESIGN.md) (the Floor UI). Read those for
 *why*; this file is *what's left*, in build order.
 
 **Already built and working, for context (do not redo):** the blueprint
@@ -14,9 +14,70 @@ sweep; Merge and Land nodes; parallel fan-out/join with `all` / `first` /
 runner output; the agent-checked gate loop primitive and the shipped
 Autopilot pattern itself; Land all; the Usage gauge; the Floor's Autopilot
 switch and this plan-setup flow. Full detail and honest caveats for every one
-of these are in `planning/PLATFORM_PLAN.md` §7 and §13.
+of these are in `PLATFORM_PLAN.md` §7 and §13.
 
 ## Items
+
+### The planning standard and the interview (do these first)
+
+Every project keeps its planning in one folder: `planning/PLAN.md` (this
+file: the actionable list), `planning/OVERVIEW.md` (the why),
+`planning/DESIGN.md` (the mechanism), `planning/spikes/`. Item A is done.
+
+A. ~~**One planning folder.**~~ Done: `PLAN.md` moved under `planning/`
+   (`PLAN_FILE`, `src/shared/patterns.ts`); a root `PLAN.md` from before is
+   still found (`findPlan`, `src/main/plan.ts`) but never written.
+
+B. ~~**A shared plan template.**~~ Done: `src/shared/planTemplate.ts` holds
+   the three documents (OVERVIEW, DESIGN, PLAN), their sections with a hint and
+   a required flag, and the plan-item format (title, why, **Done when**). The
+   "Write a plan" prompt is built from it, "Paste a plan" has a "Start from the
+   template" button, and Autopilot's builder and plan-check read each item's
+   "Done when" line. Section ids are what the interview will track per turn.
+
+C. ~~**Interview engine.**~~ Done: `src/main/interview.ts` (`InterviewManager`:
+   one resumed Claude session per interview, read-only, `sonnet`, $0.30 a turn
+   and $1.50 an interview, 14 questions at most) over `src/shared/interview.ts`
+   (turn schema, validation, merge, readiness, `compilePackage`). Every turn
+   returns `{ message, options, sections, assumptions }`; a malformed turn is
+   rejected and the answer can be re-sent; "buildable" is computed from the
+   sections, never taken from the agent; a section the person edits is theirs;
+   "enough" runs one closing fill-in turn and leftover gaps are reported in the
+   preview, not invented. IPC: `interview:start/answer/finish/edit/cancel/
+   preview/write` (preload `interview*`); write refuses to overwrite existing
+   files. 17 tests with the fake adapter. **Not yet run against the real CLI**
+   (item E): in particular `--json-schema` together with `--resume`. The
+   interview session also shows on the Floor as an ordinary session in that
+   project, which may need hiding.
+
+D. ~~**Interview UI.**~~ Done: `InterviewPane.tsx`, the first (default) tab of
+   Set up a plan. Chat on the left with the interviewer's option buttons
+   (recommended one marked) and Ctrl+Enter to send; on the right the "plan so
+   far": each section with its status, the person's own edit (which the agent
+   may not overwrite), the assumptions, a readiness meter and spend against
+   the cap. "Enough, fill in the rest", then a preview of every file with any
+   unsettled sections flagged, and only then "Write these files" (asks before
+   replacing existing ones) and the hand-off to the Autopilot confirmation.
+   The pane stays mounted when switching tabs and cancels the session if the
+   dialog closes. The dev mock plays a scripted interview so it can be seen in
+   a browser (`vite src/renderer`); checked there end to end. **Not covered:**
+   no renderer tests (as for every Floor component), and not yet seen in
+   Electron against the real CLI.
+
+E. ~~**Check against the real CLI**~~ Done (2026-10-05, `AGENT_SHIP_LIVE=1 npx
+   vitest run src/main/interview.live.test.ts`): a real interview on a scratch
+   repo, Sonnet. Turn 1 asked a sharp question after reading the repo ($0.027);
+   turn 2 **resumed the same session with `--json-schema`** and returned valid
+   structured state ($0.07 cumulative); "enough" filled everything ($0.153 in
+   total, 60s, 3 turns); the written package had no warnings and a PLAN of five
+   items, each with Why and a checkable Done when. One earlier attempt failed
+   on its first turn with the useless error text "success" (a CLI result with
+   `is_error` set; cause not reproduced, not seen again in three more real
+   calls): the adapter now reports the result text instead. **Not tested:** a
+   long interview (more than 3 turns), the Electron dialog against the real
+   CLI, and whether the interview session should be hidden on the Floor.
+
+### Backlog
 
 1. **A multi-branch Merge.** Today's Merge node lands one branch at a time.
    When a `join: all` fan-out keeps several passing branches (`src/shared/blueprint.ts`'s
@@ -74,7 +135,7 @@ of these are in `planning/PLATFORM_PLAN.md` §7 and §13.
 8. **Export a blueprint to a Claude Code dynamic-workflow script**, and
    import a simple one back. Lets a blueprint remain useful even where Agent
    Ship itself isn't installed, and is the hedge noted in
-   `planning/PLATFORM_PLAN.md` §9 against Claude Code absorbing this feature.
+   `PLATFORM_PLAN.md` §9 against Claude Code absorbing this feature.
 
 9. **An MCP server** exposing "run flow / list runs / approve a gate" to
    other agents or Claude Desktop, so a flow can be started or a human gate
@@ -113,7 +174,7 @@ These need a person, not a build/test/land cycle, so Autopilot should leave
 them alone even if it notices them:
 
 - Running the app on real work repeatedly to see what actually breaks
-  (`planning/PLATFORM_PLAN.md` §11.1) - needs a human picking real tasks and
+  (`PLATFORM_PLAN.md` §11.1) - needs a human picking real tasks and
   judging the results, not something to automate here.
 - The competitor teardown (§11.2): Claude Code's own agent view/workflows,
   Superset, Claude Squad, Vibe Kanban.

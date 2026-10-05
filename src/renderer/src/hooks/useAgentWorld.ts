@@ -51,6 +51,8 @@ export interface World {
   settings: Settings
   weeklyTokens: number
   refreshProjects: () => Promise<void>
+  /** Takes a project off the Floor (registered or only discovered). Files are untouched. */
+  removeRoom: (room: Room) => Promise<void>
   refreshSessions: () => Promise<void>
   setBudget: (budget: number) => Promise<void>
   gitStateFor: (cwd: string) => GitState | undefined
@@ -66,6 +68,7 @@ export function useAgentWorld(): World {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [running, setRunning] = useState<RunningAgent[]>([])
   const [hidden, setHiddenState] = useState<string[]>([])
+  const [hiddenProjects, setHiddenProjects] = useState<string[]>([])
   const [live, setLive] = useState<Map<string, LiveRecord>>(new Map())
   const [gitStates, setGitStates] = useState<Map<string, GitState>>(new Map())
   const [settings, setSettings] = useState<Settings>({ weeklyTokenBudget: 50_000_000 })
@@ -75,8 +78,19 @@ export function useAgentWorld(): World {
   const [, setTick] = useState(0)
 
   const refreshProjects = useCallback(async () => {
-    setProjects(await window.agentShip.listProjects())
+    const [list, gone] = await Promise.all([window.agentShip.listProjects(), window.agentShip.listHiddenProjects()])
+    setProjects(list)
+    setHiddenProjects(gone)
   }, [])
+
+  const removeRoom = useCallback(
+    async (room: Room): Promise<void> => {
+      if (room.ephemeral) await window.agentShip.hideProjectPath(room.path)
+      else await window.agentShip.removeProject(room.id)
+      await refreshProjects()
+    },
+    [refreshProjects]
+  )
 
   const refreshSessions = useCallback(async () => {
     const [list, alive] = await Promise.all([
@@ -144,12 +158,13 @@ export function useAgentWorld(): World {
     for (const cwd of cwds) {
       if (!cwd) continue
       if (registered.some((r) => pathsMatch(cwd, r.path))) continue
+      if (hiddenProjects.some((h) => pathsMatch(cwd, h))) continue
       const id = `extra:${cwd}`
       if (!extra.has(id)) extra.set(id, { id, name: baseName(cwd), path: cwd, ephemeral: true })
     }
 
     return [...registered, ...extra.values()]
-  }, [projects, sessions, liveList])
+  }, [projects, sessions, liveList, hiddenProjects])
 
   const roomIdFor = useCallback(
     (cwd: string): string | null => {
@@ -366,6 +381,7 @@ export function useAgentWorld(): World {
     settings,
     weeklyTokens,
     refreshProjects,
+    removeRoom,
     refreshSessions,
     setBudget,
     gitStateFor,

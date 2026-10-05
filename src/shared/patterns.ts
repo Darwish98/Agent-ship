@@ -1,6 +1,7 @@
 // Shipped blueprints. "Supervisor" and "Land a branch" are the two behaviours
 // the app once hard-coded (a fixed orchestrator card and a merge agent),
 // re-expressed as data the engine runs.
+import { DESIGN_FILE, OVERVIEW_FILE, PLAN_FILE, PLANNING_DIR, templateForPrompt } from './planTemplate'
 import { SCHEMA_VERSION } from './blueprint'
 import type { Blueprint, BlueprintEdge, BlueprintNode } from './schema'
 
@@ -122,8 +123,8 @@ function repairPrompt(base: string, tests: string): string {
     '2. The test is out of date. The change intentionally altered what the test asserts. Update the test.',
     '',
     'To decide between 1 and 2, find out what the change was for: `git diff HEAD^1 HEAD` shows what the branch',
-    `changed against "${base}"; \`git log\` shows its commits. Read the project's intent too: PLAN.md and any`,
-    'markdown under planning/ or docs/, if they exist.',
+    `changed against "${base}"; \`git log\` shows its commits. Read the project's intent too: planning/PLAN.md (or a`,
+    'root PLAN.md) and any other markdown under planning/ or docs/, if they exist.',
     '',
     'Rules:',
     '- Prefer fixing the code whenever the test reflects behaviour the plan still wants.',
@@ -347,10 +348,7 @@ const TOURNAMENT: Blueprint = {
   ]
 }
 
-/** Where the Floor's Autopilot switch reads and writes a project's plan. A
- *  flow's own `plan` input can point anywhere - this is only the default a
- *  fresh switch offers to create. */
-export const PLAN_FILE = 'PLAN.md'
+export { DESIGN_FILE, LEGACY_PLAN_FILE, OVERVIEW_FILE, PLAN_FILE, PLANNING_DIR } from './planTemplate'
 
 /** Brief for the builder: work the plan one item at a time, in whatever order
  *  makes sense, never all at once - each item becomes its own gated, landed
@@ -358,6 +356,8 @@ export const PLAN_FILE = 'PLAN.md'
 const AUTOPILOT_BUILD_PROMPT = [
   'Read the plan at {{plan}}. Look at the current state of the repository',
   '(recent commits, existing files) to see what has already been done.',
+  '',
+  'If the item has a "Done when" line, that is the standard it must meet.',
   '',
   'Implement the SINGLE next unfinished item from the plan - the smallest',
   'coherent piece of work you can land on its own. Do not try to do',
@@ -374,7 +374,8 @@ const AUTOPILOT_CHECK_PROMPT = [
   'repository (recent commits, existing files, what the builder just said:',
   '{{build.result}}).',
   '',
-  'Has EVERY item in the plan now been fully implemented and landed? Do not',
+  'Has EVERY item in the plan now been fully implemented and landed (meeting',
+  'its "Done when" line where it has one)? Do not',
   'guess - look. Reply with JSON: {"done": boolean, "reason": "one or two',
   'sentences saying what, if anything, is still missing"}.'
 ].join('\n')
@@ -426,44 +427,29 @@ export const PLAN_FLOW = '__plan__'
  * choice Supervisor already makes for an agent that is meant to touch the
  * project broadly, and here the "broad" touch is exactly one new file.
  */
-/** Where a generated project's fuller planning docs live - the same two-tier
- *  shape this project's own docs use (a narrative overview and a focused
- *  design doc), under a generically-named folder since "PLATFORM_PLAN" and
- *  "FLOOR_DESIGN" are this project's own names, not a convention every
- *  project should share. */
-export const PLANNING_DIR = 'planning'
-export const OVERVIEW_FILE = `${PLANNING_DIR}/OVERVIEW.md`
-export const DESIGN_FILE = `${PLANNING_DIR}/DESIGN.md`
-
 export function buildPlanBlueprint(): Blueprint {
   const prompt = [
     `First, check whether ${PLANNING_DIR}/ already holds real planning documents`,
     `(Glob for ${PLANNING_DIR}/*.md and read what is there). If it does, read them`,
     `and write ${PLAN_FILE} as a distilled, actionable summary of what they already`,
-    "say - do not overwrite or contradict them, and do not invent a new idea when",
+    'say - do not overwrite or contradict them, and do not invent a new idea when',
     'one is already recorded.',
     '',
-    `Otherwise, this is a new project with nothing written down yet. From the idea`,
-    'below, create THREE files:',
+    'Otherwise, this is a new project with nothing written down yet. From the idea',
+    'below, write the standard planning package, using the Write tool. These are',
+    'the files and the sections each one has:',
     '',
-    `1. ${OVERVIEW_FILE} - the fuller plan: what the idea is, its goals, and a`,
-    '   phased roadmap. This is the record of *why*, for a person to read.',
-    `2. ${DESIGN_FILE} - a more detailed design for the core mechanism: how the`,
-    '   main pieces fit together, the key decisions and trade-offs, and honest',
-    '   open questions. Keep it proportional to the idea - a small idea gets a',
-    '   short design doc, not padding. Skip this file only if the idea is truly',
-    '   too small to have a "design" (e.g. a single script).',
-    `3. ${PLAN_FILE} in the repository root (using the Write tool; this is the`,
-    '   file that gets worked from, one item at a time) - a numbered list of',
-    '   concrete, independently implementable and testable items, each small',
-    '   enough that a single agent could build, test and land it in one pass.',
-    '   Order them so earlier items unblock later ones. Be specific: name real',
-    '   files, commands and behaviour where you can, not vague goals. Link back',
-    `   to ${OVERVIEW_FILE} (and ${DESIGN_FILE} if you wrote one) for the`,
-    '   reasoning, the way this rule you are following right now does.',
+    templateForPrompt(),
     '',
-    "If the idea is ambiguous, write down the assumption you made in the",
-    'overview rather than leaving it open.',
+    'Keep every document proportional to the idea - a small idea gets short',
+    `documents, not padding. Skip ${DESIGN_FILE} only if the idea is too small to`,
+    'have a "design" (e.g. a single script). Be specific in the plan: name real',
+    'files, commands and behaviour, not vague goals. Each plan item must be small',
+    'enough that a single agent could build, test and land it in one pass, and',
+    'earlier items must unblock later ones.',
+    '',
+    'If the idea is ambiguous, record the assumption you made under Assumptions in',
+    `${OVERVIEW_FILE} rather than leaving it open.`,
     '',
     'The idea:',
     '{{idea}}',

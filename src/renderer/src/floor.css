@@ -1506,3 +1506,283 @@ button.pl-stage {
   line-height: 1.4;
   color: var(--low);
 }
+
+/* --- the planning interview ------------------------------------------------ */
+
+.rdlg.ps-wide {
+  width: 920px;
+}
+
+.iv {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.iv-chat,
+.iv-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.iv-log,
+.iv-plan {
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.iv-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 240px;
+}
+
+.iv-msg {
+  max-width: 92%;
+  padding: 8px 11px;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.iv-agent {
+  align-self: flex-start;
+  background: var(--surface-alt);
+}
+
+.iv-user {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+}
+
+.iv-thinking {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.iv-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.iv-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.iv-option:hover {
+  border-color: var(--accent);
+}
+
+.iv-rec {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.iv-detail {
+  flex-basis: 100%;
+  color: var(--text-muted);
+}
+
+.iv-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.iv-meter {
+  height: 6px;
+  background: var(--surface-alt);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.iv-meter-fill {
+  height: 100%;
+  background: var(--ok);
+  transition: width 0.3s;
+}
+
+.iv-meter-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.iv-doc h4 {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.iv-sec {
+  padding: 5px 8px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.iv-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.iv-sec-title {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+
+.iv-sec-status {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.iv-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.iv-partial .iv-dot {
+  background: var(--warn);
+}
+
+.iv-ready .iv-dot {
+  background: var(--ok);
+}
+
+.iv-sec-body {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
+.iv-edit {
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.iv-editor textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.iv-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.iv-assume {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.iv-warn {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
+  border-radius: 8px;
+}
+
+.iv-warn ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.iv-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.iv-files pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  background: var(--surface-alt);
+  border-radius: 8px;
+}
+
+@media (max-width: 900px) {
+  .iv {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- removing a project from the rail ------------------------------------- */
+
+.fl-proj {
+  position: relative;
+}
+
+.fl-proj-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.fl-proj:hover .fl-proj-remove,
+.fl-proj-remove:focus-visible {
+  opacity: 1;
+}
+
+.fl-proj-remove:hover {
+  color: var(--low);
+  background: var(--surface-alt);
+}

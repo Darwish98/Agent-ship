@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { RunEvent } from '../shared/runs'
+import type { InterviewState, PackageFile } from '../shared/interview'
 import type { Blueprint } from '../shared/schema'
 
 export interface Project {
@@ -129,6 +130,10 @@ const api = {
   addProject: (): Promise<Project[]> => ipcRenderer.invoke('shipyard:addProject'),
   /** Register a folder that is already a git repo (no dialog). */
   addProjectPath: (path: string): Promise<Project[]> => ipcRenderer.invoke('shipyard:addPath', path),
+  /** Folders removed from the Floor, so Claude-discovered ones do not come back. */
+  listHiddenProjects: (): Promise<string[]> => ipcRenderer.invoke('shipyard:hiddenProjects'),
+  /** Hides a folder that was only discovered from Claude sessions (never registered). */
+  hideProjectPath: (path: string): Promise<string[]> => ipcRenderer.invoke('shipyard:hideProjectPath', path),
   removeProject: (id: string): Promise<Project[]> =>
     ipcRenderer.invoke('shipyard:removeProject', id),
 
@@ -193,12 +198,22 @@ const api = {
   ): Promise<StartRunResult> =>
     ipcRenderer.invoke('runs:land', { projectId, branch, baseBranch, testCommand, resolveConflicts }),
   /** Whether the project already has a plan file for Autopilot to read. */
-  checkPlan: (projectId: string): Promise<{ exists: boolean }> => ipcRenderer.invoke('plan:check', projectId),
+  checkPlan: (projectId: string): Promise<{ exists: boolean; file: string | null }> => ipcRenderer.invoke('plan:check', projectId),
   /** Saves plan text a person pasted themselves. */
   savePlan: (projectId: string, content: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('plan:save', { projectId, content }),
   /** Expands an idea into a detailed plan and saves it, as a normal budgeted run. */
   generatePlan: (projectId: string, idea: string): Promise<StartRunResult> => ipcRenderer.invoke('runs:plan', { projectId, idea }),
+  /** The planning interview. Each call resolves with the new state once the interviewer's turn is done. */
+  interviewStart: (projectId: string, idea: string): Promise<InterviewState | null> => ipcRenderer.invoke('interview:start', { projectId, idea }),
+  interviewAnswer: (id: string, text: string): Promise<InterviewState | null> => ipcRenderer.invoke('interview:answer', { id, text }),
+  /** "Enough": the interviewer fills every remaining gap, marking what it assumed. */
+  interviewFinish: (id: string): Promise<InterviewState | null> => ipcRenderer.invoke('interview:finish', id),
+  interviewEdit: (id: string, key: string, text: string): Promise<InterviewState | null> => ipcRenderer.invoke('interview:edit', { id, key, text }),
+  interviewCancel: (id: string): Promise<InterviewState | null> => ipcRenderer.invoke('interview:cancel', id),
+  interviewPreview: (id: string): Promise<{ files: PackageFile[]; warnings: string[] } | null> => ipcRenderer.invoke('interview:preview', id),
+  interviewWrite: (id: string, overwrite = false): Promise<{ ok: true; files: string[] } | { ok: false; error: string; existing?: string[] }> =>
+    ipcRenderer.invoke('interview:write', { id, overwrite }),
   cancelRun: (runId: string): Promise<boolean> => ipcRenderer.invoke('runs:cancel', runId),
   /** Continue an interrupted run from where it stopped. */
   resumeRun: (runId: string): Promise<StartRunResult> => ipcRenderer.invoke('runs:resume', runId),

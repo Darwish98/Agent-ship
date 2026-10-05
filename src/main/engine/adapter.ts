@@ -225,7 +225,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
           sessionId: json.session_id ?? req.sessionId,
           budgetExhausted,
-          error: code === 0 && !json.is_error ? undefined : (json.errors?.join('; ') || json.subtype || `exit ${code}`)
+          error:
+            code === 0 && !json.is_error
+              ? undefined
+              : json.errors?.join('; ') || (json.subtype && json.subtype !== 'success' ? json.subtype : '') || json.result?.trim().slice(0, 300) || `exit ${code}`
         })
       })
 

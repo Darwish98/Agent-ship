@@ -10,6 +10,8 @@ import type {
   Settings
 } from '../../../preload'
 import { slugify, usdCeiling } from '../../../shared/blueprint'
+import { applyTurn, compilePackage, editSection, emptySections, readinessOf, type InterviewState } from '../../../shared/interview'
+import { PLAN_TEMPLATE } from '../../../shared/planTemplate'
 import { buildLandBlueprint, buildPlanBlueprint, fromPattern, LAND_FLOW, PATTERNS, PLAN_FLOW } from '../../../shared/patterns'
 import type { RunEvent } from '../../../shared/runs'
 import { parseBlueprint, type Blueprint } from '../../../shared/schema'
@@ -125,8 +127,46 @@ const gitStates: Record<string, GitState> = {
   }
 }
 
+const MOCK_SCRIPT: { message: string; options?: { label: string; detail: string; recommended: boolean }[]; sections: { key: string; content: string }[]; assumptions?: string[] }[] = [
+  { message: 'I looked through the repo. Who is this for: just you, or other developers too?', options: [{ label: 'Just me', detail: 'No accounts, no sharing', recommended: true }, { label: 'Other developers', detail: 'Needs docs and a stable interface', recommended: false }], sections: [{ key: 'overview/goal', content: 'Find branches that are safe to delete.' }] },
+  { message: 'What does "safe to delete" mean? Give me a real example of a branch you would delete and one you would not.', sections: [{ key: 'overview/users', content: 'A solo developer.' }], assumptions: ['Runs locally, no network'] },
+  { message: 'That is enough for me to write the plan.', sections: [] }
+]
+const mockInterview = {
+  state: null as InterviewState | null,
+  turn(i: number): InterviewState {
+    const st = this.state!
+    const t = MOCK_SCRIPT[Math.min(i, MOCK_SCRIPT.length - 1)]
+    const done = i >= MOCK_SCRIPT.length - 1
+    const filled = done ? PLAN_TEMPLATE.flatMap((d) => d.sections.filter((x) => x.required).map((x) => ({ key: `${d.id}/${x.id}`, content: `Settled ${x.title.toLowerCase()}.` }))) : t.sections
+    const merged = applyTurn(st.sections, st.assumptions, { message: t.message, options: t.options ?? [], sections: filled.map((x) => ({ ...x, status: done ? 'ready' : 'partial' })), assumptions: t.assumptions ?? [] })
+    this.state = { ...st, ...merged, turns: i + 1, spentUsd: st.spentUsd + 0.04, ...readinessOf(merged.sections), messages: [...st.messages, { role: 'agent', text: t.message, options: t.options }] }
+    this.state.status = this.state.buildable ? 'ready' : 'asking'
+    return this.state
+  },
+  async start(projectId: string, idea: string): Promise<InterviewState> {
+    await new Promise((r) => setTimeout(r, 600))
+    const sections = emptySections()
+    this.state = { id: 'demo', projectId, status: 'asking', messages: idea.trim() ? [{ role: 'user', text: idea.trim() }] : [], sections, assumptions: [], spentUsd: 0, capUsd: 1.5, turns: 0, maxTurns: 14, ...readinessOf(sections) }
+    return this.turn(0)
+  },
+  async answer(text: string): Promise<InterviewState> {
+    await new Promise((r) => setTimeout(r, 600))
+    this.state = { ...this.state!, messages: [...this.state!.messages, { role: 'user', text }] }
+    return this.turn(this.state.turns)
+  },
+  async finish(): Promise<InterviewState> {
+    return this.turn(MOCK_SCRIPT.length - 1)
+  },
+  edit(key: string, text: string): InterviewState {
+    this.state = { ...this.state!, sections: editSection(this.state!.sections, key, text) ?? this.state!.sections }
+    return this.state
+  }
+}
+
 let settings: Settings = { weeklyTokenBudget: 50_000_000 }
 let hiddenIds: string[] = []
+let hiddenProjectPaths: string[] = []
 export function installDevMock(): void {
   const listeners: ((e: AgentEvent) => void)[] = []
 
@@ -226,7 +266,19 @@ export function installDevMock(): void {
     },
     listProjects: async () => projects,
     addProject: async () => projects,
-    removeProject: async (id) => projects.filter((p) => p.id !== id),
+    listHiddenProjects: async () => hiddenProjectPaths,
+    hideProjectPath: async (p) => {
+      hiddenProjectPaths = [...new Set([...hiddenProjectPaths, p])]
+      return hiddenProjectPaths
+    },
+    removeProject: async (id) => {
+      const gone = projects.find((p) => p.id === id)
+      if (gone) {
+        hiddenProjectPaths = [...new Set([...hiddenProjectPaths, gone.path])]
+        projects.splice(projects.indexOf(gone), 1)
+      }
+      return [...projects]
+    },
     getSettings: async () => settings,
     setSettings: async (patch) => (settings = { ...settings, ...patch }),
     listSessions: async () => sessions,
@@ -298,12 +350,21 @@ export function installDevMock(): void {
       const project = projects.find((x) => x.id === projectId)!
       return { ok: true, runId: simulateLand(project, buildLandBlueprint({ branch, base, testCommand, resolveConflicts }), branch) }
     },
-    checkPlan: async () => ({ exists: false }),
+    checkPlan: async () => ({ exists: false, file: null }),
     savePlan: async () => ({ ok: true }),
     generatePlan: async (projectId, idea) => {
       const project = projects.find((x) => x.id === projectId)!
       return { ok: true, runId: simulateRun(project, PLAN_FLOW, buildPlanBlueprint(), { idea }) }
     },
+    // A scripted interview, so the dialog can be seen without a model. The real
+    // engine (src/main/interview.ts) is covered by its own tests.
+    interviewStart: async (projectId, idea) => mockInterview.start(projectId, idea),
+    interviewAnswer: async (_id, text) => mockInterview.answer(text),
+    interviewFinish: async () => mockInterview.finish(),
+    interviewEdit: async (_id, key, text) => mockInterview.edit(key, text),
+    interviewCancel: async () => mockInterview.state,
+    interviewPreview: async () => compilePackage(mockInterview.state!.sections, mockInterview.state!.assumptions, 'Demo'),
+    interviewWrite: async () => ({ ok: true, files: ['planning/PLAN.md'] }),
     addProjectPath: async () => projects,
     listFlows: async (projectId) =>
       [...flowStore]

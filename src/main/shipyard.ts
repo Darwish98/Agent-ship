@@ -42,9 +42,33 @@ export function loadProjects(dir: string): Project[] {
   return Array.isArray(list) ? list : []
 }
 
+const samePath = (a: string, b: string): boolean => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
+
+/** Folders the person removed from the Floor. Claude Code's own sessions keep
+ *  naming a removed folder, so without this it would reappear as "not added
+ *  yet" on the next refresh. Adding the folder again lifts it. */
+export function loadHiddenProjects(dir: string): string[] {
+  const list = readJson<string[]>(filePath(dir, 'hidden-projects.json'), [])
+  return Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : []
+}
+
+export function hideProjectPath(dir: string, projectPath: string): string[] {
+  const list = loadHiddenProjects(dir)
+  if (!list.some((x) => samePath(x, projectPath))) list.push(path.resolve(projectPath))
+  writeJson(dir, 'hidden-projects.json', list)
+  return list
+}
+
+function unhideProjectPath(dir: string, projectPath: string): void {
+  const list = loadHiddenProjects(dir)
+  const next = list.filter((x) => !samePath(x, projectPath))
+  if (next.length !== list.length) writeJson(dir, 'hidden-projects.json', next)
+}
+
 export function addProject(dir: string, projectPath: string): Project[] {
   const list = loadProjects(dir)
   const normalized = path.resolve(projectPath)
+  unhideProjectPath(dir, normalized)
   if (list.some((p) => p.path.toLowerCase() === normalized.toLowerCase())) return list
 
   list.push({
@@ -69,9 +93,14 @@ export function addProjectIfRepo(dir: string, projectPath: string): Project[] {
   return addProject(dir, resolved)
 }
 
+/** Takes a project off the Floor. Only Agent Ship's own record changes: the
+ *  folder, its flows, its branches and its runs are left exactly as they are. */
 export function removeProject(dir: string, id: string): Project[] {
-  const list = loadProjects(dir).filter((p) => p.id !== id)
+  const all = loadProjects(dir)
+  const gone = all.find((p) => p.id === id)
+  const list = all.filter((p) => p.id !== id)
   writeJson(dir, 'shipyard.json', list)
+  if (gone) hideProjectPath(dir, gone.path)
   return list
 }
 
