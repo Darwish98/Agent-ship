@@ -42,6 +42,10 @@
   cursor: pointer;
 }
 
+.rail-theme {
+  margin-top: auto;
+}
+
 .rail-btn:hover {
   background: var(--surface-alt);
 }
