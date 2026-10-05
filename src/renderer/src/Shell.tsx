@@ -3,6 +3,7 @@ import { BlueprintEditor } from './blueprint/BlueprintEditor'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Floor } from './floor/Floor'
 import { WorldProvider } from './hooks/world'
+import { useTheme } from './lib/theme'
 import { NavContext, type FlowFocus, type Mode, type Nav } from './nav'
 import { RunDialog, type RunTarget } from './runs/RunDialog'
 import { RunsProvider, useRuns } from './runs/RunsProvider'
@@ -30,6 +31,7 @@ function ShellInner(): JSX.Element {
   const [focus, setFocus] = useState<FlowFocus | null>(null)
   const [runTarget, setRunTarget] = useState<RunTarget | null>(null)
   const { runs } = useRuns()
+  const { theme, toggle: toggleTheme } = useTheme()
 
   const nav = useMemo<Nav>(
     () => ({
@@ -69,6 +71,16 @@ function ShellInner(): JSX.Element {
               {m.id === 'floor' && waiting > 0 && <span className="rail-badge">{waiting}</span>}
             </button>
           ))}
+          <button
+            type="button"
+            className="rail-btn rail-theme"
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            <span className="rail-icon">{theme === 'dark' ? '☀' : '☾'}</span>
+            <span className="rail-label">{theme === 'dark' ? 'Light' : 'Dark'}</span>
+          </button>
         </nav>
 
         <div className="shell-view" hidden={mode !== 'floor'}>

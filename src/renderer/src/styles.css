@@ -17,6 +17,24 @@
   --font-mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
 }
 
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #1a1917;
+  --surface: #242321;
+  --surface-alt: #2d2b28;
+  --border: #38352f;
+  --border-strong: #4a463e;
+  --text: #ecebe6;
+  --text-muted: #9c9a91;
+  --accent: #d9774f;
+  --accent-hover: #e68a64;
+  --accent-soft: #3b2a21;
+  --accent-soft-border: #5a3a2a;
+  --ok: #6fa676;
+  --warn: #d4a04a;
+  --low: #d0624a;
+}
+
 * {
   box-sizing: border-box;
 }
