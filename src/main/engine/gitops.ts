@@ -80,6 +80,16 @@ function unlinkDependencies(link: string | undefined): void {
 /** The pathspec that keeps a linked or generated node_modules out of commits. */
 const NO_DEPS = [':(exclude)node_modules']
 
+/** `NO_DEPS`, unless the project already ignores node_modules. Naming an ignored
+ *  path in a pathspec makes `git add` fail outright ("The following paths are
+ *  ignored by one of your .gitignore files"), and an ignored directory is kept
+ *  out of the commit anyway. A linked node_modules the project does not ignore
+ *  (a symlink is not matched by a `node_modules/` rule) still gets excluded. */
+async function depsSpec(cwd: string): Promise<string[]> {
+  const r = await gitRaw(cwd, ['check-ignore', '-q', 'node_modules'])
+  return r.code === 0 ? [] : NO_DEPS
+}
+
 /** New branch `branch` from `base`, checked out in a fresh directory. */
 export async function createWorktree(repo: string, root: string, name: string, base: string): Promise<Worktree> {
   const dir = path.join(root, name)
@@ -177,8 +187,9 @@ async function identityArgs(cwd: string): Promise<string[]> {
 
 /** Commits whatever the agent left in the tree. Returns true if a commit was made. */
 export async function commitAll(cwd: string, message: string): Promise<boolean> {
-  await git(cwd, ['add', '-A', '--', '.', ...NO_DEPS])
-  const dirty = await git(cwd, ['status', '--porcelain', '--', '.', ...NO_DEPS])
+  const deps = await depsSpec(cwd)
+  await git(cwd, ['add', '-A', '--', '.', ...deps])
+  const dirty = await git(cwd, ['status', '--porcelain', '--', '.', ...deps])
   if (!dirty) return false
   await git(cwd, [...(await identityArgs(cwd)), 'commit', '-q', '-m', message])
   return true
@@ -304,7 +315,7 @@ export async function workingTreeId(cwd: string): Promise<string> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentship-idx-'))
   const env = { GIT_INDEX_FILE: path.join(dir, 'index') }
   try {
-    const add = await gitRaw(top, ['add', '-A', '--', '.', ...NO_DEPS], 120_000, env)
+    const add = await gitRaw(top, ['add', '-A', '--', '.', ...(await depsSpec(top))], 120_000, env)
     if (add.code !== 0) throw new Error(add.err || 'git add failed')
     const w = await gitRaw(top, ['write-tree'], 60_000, env)
     if (w.code !== 0) throw new Error(w.err || 'git write-tree failed')

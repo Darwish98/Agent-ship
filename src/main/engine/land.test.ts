@@ -344,6 +344,32 @@ describe('project dependencies in scratch copies', () => {
     expect(worktreeCount()).toBe(1)
   })
 
+  for (const rule of ['node_modules', 'node_modules/']) {
+    it(`commits an agent's work when the project itself ignores node_modules (${rule})`, async () => {
+      // Reported: with node_modules in .gitignore, `git add` refused the exclude
+      // pathspec ("The following paths are ignored...") and every Builder failed.
+      write('.gitignore', `${rule}\n`)
+      commitAll('ignore deps')
+      write('node_modules/dep/index.js', 'module.exports = 1\n')
+      const events: RunEvent[] = []
+      const fake = new Fake((req) => {
+        if (req.access === 'edit') fs.writeFileSync(path.join(req.cwd, 'made.txt'), 'x')
+        return ok()
+      })
+      const engine = new RunEngine({ adapter: fake, worktreeRoot: path.join(root, 'wt'), emit: (e) => events.push(e) })
+      const bp = fromPattern(PATTERNS[2])
+      const gate = bp.nodes.find((n) => n.id === 'tests')!
+      if (gate.kind === 'gate') gate.config.command = exists('made.txt')
+      const r = await engine.start({ projectId: 'p', projectName: 'repo', projectPath: repo, flowSlug: 'f', blueprint: bp, inputs: { task: 't' } })
+      if (!r.ok) throw new Error(r.error)
+      await engine.whenDone(r.runId)
+      const v = foldRun(events)!
+      expect(v.status).toBe('passed')
+      expect(has(v.branch!, 'made.txt')).toBe(true)
+      expect(has(v.branch!, 'node_modules/dep/index.js')).toBe(false)
+    })
+  }
+
   it('never commits the linked dependencies into an agent branch', async () => {
     write('node_modules/dep/index.js', 'module.exports = 1\n')
     const events: RunEvent[] = []
