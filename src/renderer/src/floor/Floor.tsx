@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState, type JSX } from 'react'
 import { LANES, type Lane, type WorkItem } from '../../../shared/floor'
 import { slugify } from '../../../shared/blueprint'
-import { fromPattern, PATTERNS, PLAN_FILE } from '../../../shared/patterns'
+import { fromPattern, isStaleShippedAutopilot, PATTERNS, PLAN_FILE } from '../../../shared/patterns'
 import { formatUsd, isActive } from '../../../shared/runs'
 import { UsageGauge } from '../components/UsageGauge'
 import { TaskDialog, type TaskDialogSpec } from '../components/TaskDialog'
@@ -240,7 +240,14 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
     }
     // Ensure the project has the flow saved; a copy already there (maybe
     // user-edited) is left alone - null means "only if it doesn't exist yet".
-    await window.agentShip.saveFlow(projectId, AUTOPILOT_SLUG, fromPattern(AUTOPILOT_PATTERN), null)
+    // A copy saved by an earlier version, still exactly as shipped, is brought up
+    // to date; one the person edited is left alone.
+    const saved = await window.agentShip.loadFlow(projectId, AUTOPILOT_SLUG)
+    if (saved.ok && isStaleShippedAutopilot(saved.blueprint)) {
+      await window.agentShip.saveFlow(projectId, AUTOPILOT_SLUG, fromPattern(AUTOPILOT_PATTERN), saved.hash)
+    } else {
+      await window.agentShip.saveFlow(projectId, AUTOPILOT_SLUG, fromPattern(AUTOPILOT_PATTERN), null)
+    }
     const { exists, file } = await window.agentShip.checkPlan(projectId)
     if (exists) nav.requestRun(projectId, AUTOPILOT_SLUG, { plan: file ?? PLAN_FILE })
     else setPlanSetup({ projectId, projectName: room.name })

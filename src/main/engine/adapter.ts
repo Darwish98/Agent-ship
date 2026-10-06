@@ -2,6 +2,7 @@
 // (the runner) deals in StepRequest / StepResult, so a second vendor later is
 // a second adapter, not a rewrite.
 import { execFile, spawn, spawnSync } from 'node:child_process'
+import { projectEnv } from './env'
 
 export interface StepRequest {
   prompt: string
@@ -170,7 +171,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       const child = spawn(bin, [...prefix, ...buildClaudeArgs(req, lean)], {
         cwd: req.cwd,
         windowsHide: true,
-        env: { ...process.env, ...req.env },
+        env: projectEnv({ ...process.env, ...req.env }, req.cwd),
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32'
       })

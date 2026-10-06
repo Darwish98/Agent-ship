@@ -51,6 +51,10 @@ const gateConfig = z.object({
   check: z.enum(['command', 'human', 'agent']).default('command'),
   /** Shell command; exit 0 = pass. Used when check = command. */
   command: z.string().max(2_000).default(''),
+  /** A recognised test runner that ran ZERO tests fails the gate, even at exit 0
+   *  (`--passWithNoTests`, "No test files found"). A gate that verifies nothing
+   *  is not a gate. Unset means off: a project may deliberately have no tests. */
+  requireTests: z.boolean().optional(),
   /** What the reviewer should look at. Used when check = human. */
   instructions: z.string().max(2_000).default(''),
   /** What to judge, and how to answer. Used when check = agent: an agent

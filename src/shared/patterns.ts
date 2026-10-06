@@ -357,11 +357,17 @@ const AUTOPILOT_BUILD_PROMPT = [
   'Read the plan at {{plan}}. Look at the current state of the repository',
   '(recent commits, existing files) to see what has already been done.',
   '',
-  'If the item has a "Done when" line, that is the standard it must meet.',
-  '',
   'Implement the SINGLE next unfinished item from the plan - the smallest',
   'coherent piece of work you can land on its own. Do not try to do',
   'everything at once; a later pass will come back for the rest.',
+  '',
+  'How the result is checked, so build for it:',
+  '- If the item has a "Done when" line, that is the standard it must meet.',
+  '- The tests are run for you (`npm test`) and the gate FAILS if no tests run at all.',
+  '  Add or update at least one real automated test that proves this item.',
+  '- Declare every package you import in package.json; the engine installs from it.',
+  '  Never rely on a globally installed tool.',
+  '- Never edit the test script or its flags to make a check pass.',
   '',
   'When you are done, reply with a short summary of what you implemented and',
   'which item of the plan it corresponds to.'
@@ -380,28 +386,59 @@ const AUTOPILOT_CHECK_PROMPT = [
   'sentences saying what, if anything, is still missing"}.'
 ].join('\n')
 
+/** Bumped when the shipped Autopilot changes shape. v2: the merged result is tested and repaired before landing. */
+export const AUTOPILOT_VERSION = 2
+
+/**
+ * A project's saved Autopilot flow that is still exactly the shipped v1 (the
+ * six nodes, an untouched `npm test` gate) and so can be replaced by the
+ * current one without losing anything the person did. Anything edited is left alone.
+ */
+export function isStaleShippedAutopilot(bp: Blueprint): boolean {
+  if (bp.name !== 'Autopilot' || bp.version >= AUTOPILOT_VERSION) return false
+  const ids = bp.nodes.map((n) => n.id).sort().join(',')
+  if (ids !== 'build,land,merge,plancheck,start,tests') return false
+  const tests = bp.nodes.find((n) => n.id === 'tests')
+  return tests?.kind === 'gate' && tests.config.command === 'npm test'
+}
+
 const AUTOPILOT: Blueprint = {
   schemaVersion: SCHEMA_VERSION,
   name: 'Autopilot',
   description:
     'Works a plan one item at a time - build, test, merge, land - then asks an agent if the plan is fully done yet, and loops back if not. The loop cap (a retry cap on the last gate) is the safety net.',
-  version: 1,
+  version: AUTOPILOT_VERSION,
   defaultBudget: { maxUsd: 1 },
   inputs: [{ name: 'plan', label: `Plan file (a path in the repo, e.g. ${PLAN_FILE})`, required: true }],
   nodes: [
     trigger(),
     agent('build', 'Builder', AUTOPILOT_BUILD_PROMPT, 1, { worktree: true, edit: true, maxTokens: 600_000, maxUsd: 1 }),
     {
+      // The builder gets fast feedback in its own session. A pass that ran no
+      // tests is not a pass (requireTests), or the gate verifies nothing.
       id: 'tests', kind: 'gate', label: 'Tests pass', position: at(2), budget: { maxRetries: 3 },
-      config: { check: 'command', command: 'npm test', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
+      config: { check: 'command', command: 'npm test', requireTests: true, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
     { id: 'merge', kind: 'merge', label: 'Merge into main', position: at(3), budget: { maxUsd: 1 }, config: { baseBranch: 'main', resolveConflicts: true, resolverPrompt: RESOLVER_PROMPT } },
-    { id: 'land', kind: 'land', label: 'Land on main', position: at(4), config: { baseBranch: 'main' } },
+    {
+      // What lands is the merged result, so that is what is tested, with the
+      // same repair loop as a manual Land. `main` only moves after this passes.
+      id: 'verify', kind: 'gate', label: 'Test the merged result', position: at(4), budget: { maxMinutes: 15, maxRetries: LAND_REPAIR_ATTEMPTS },
+      config: { check: 'command', command: 'npm test', requireTests: true, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
+    },
+    {
+      id: 'repair', kind: 'agent', label: 'Repair the merged result', position: at(4, 1), budget: { maxUsd: 1 },
+      config: {
+        role: 'Repair', model: 'default', prompt: repairPrompt('main', 'npm test'), worktree: false, access: 'edit',
+        tools: ['Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git status *)', 'Bash(npm test)'], outputSchema: ''
+      }
+    },
+    { id: 'land', kind: 'land', label: 'Land on main', position: at(5), config: { baseBranch: 'main' } },
     {
       // The loop primitive: this gate's `fail` edge is "not done yet, go
       // around again"; its retry cap is the run's hard stop regardless of
       // what the agent decides, so a confused judge can never run forever.
-      id: 'plancheck', kind: 'gate', label: 'Plan fully done?', position: at(5), budget: { maxRetries: 8, maxUsd: 0.3 },
+      id: 'plancheck', kind: 'gate', label: 'Plan fully done?', position: at(6), budget: { maxRetries: 8, maxUsd: 0.3 },
       config: { check: 'agent', command: '', instructions: '', agentPrompt: AUTOPILOT_CHECK_PROMPT, agentModel: 'sonnet', agentTools: [] }
     }
   ],
@@ -410,7 +447,10 @@ const AUTOPILOT: Blueprint = {
     edge('build', 'tests', 'branch'),
     edge('tests', 'merge', 'verdict', 'pass'),
     edge('tests', 'build', 'verdict', 'fail'),
-    edge('merge', 'land', 'branch'),
+    edge('merge', 'verify', 'branch'),
+    edge('verify', 'land', 'verdict', 'pass'),
+    edge('verify', 'repair', 'verdict', 'fail'),
+    edge('repair', 'verify', 'branch'),
     edge('land', 'plancheck', 'branch'),
     edge('plancheck', 'build', 'verdict', 'fail')
   ]

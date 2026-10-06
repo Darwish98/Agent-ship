@@ -77,6 +77,63 @@ E. ~~**Check against the real CLI**~~ Done (2026-10-05, `AGENT_SHIP_LIVE=1 npx
    long interview (more than 3 turns), the Electron dialog against the real
    CLI, and whether the interview session should be hidden on the Floor.
 
+### Autopilot, rethought (2026-10-06, from a real run on a new Three.js project)
+
+The first real Autopilot run on a fresh project showed the loop was verifying
+nothing: the tests gate passed on "No test files found" (the Builder had added
+`--passWithNoTests` to its own `package.json`), no dependency was ever installed
+(`package.json` listed none, the project had no `node_modules`), the "tests" ran
+with Agent Ship's own vitest because `npm run dev` puts its `node_modules/.bin` on
+PATH, `main` received four unverified merges, and the failure only surfaced at a
+later, different stage (Land) whose repair agent cannot install packages.
+
+F. ~~**A dependency stage.**~~ Done: `src/main/engine/deps.ts`. Each scratch copy gets
+   what ITS OWN `package.json` declares: nothing if `node_modules` already covers
+   it, else the project's own `node_modules` if that does, else one `npm ci` /
+   `npm install` per distinct manifest + lockfile into `<userData>/deps/<key>`,
+   linked in. Runs before every command gate and before a builder step. A failed
+   install fails the gate with npm's output. Workspaces and projects without
+   dependencies are left alone.
+
+G. ~~**A clean environment.**~~ Done: `src/main/engine/env.ts`. Commands and agents
+   no longer inherit other packages' `node_modules/.bin` on PATH or the `npm_*`
+   variables describing Agent Ship's own package; the project's own `.bin` comes first.
+
+H. ~~**Gates that can't pass on nothing.**~~ Done: a command gate with
+   `requireTests` fails when the runner exits 0 having run no tests (`ranNoTests`),
+   with a message to write one and never to loosen the script. Set on both Autopilot
+   test gates; Land's own gate stays off, since a project may deliberately have none.
+
+I. ~~**One verification path.**~~ Done: Autopilot is now build -> test (builder gets
+   fast feedback in its session) -> merge -> **test the merged result**, repaired in
+   the scratch copy on failure (same as Land) -> land -> plan-check. `main` moves only
+   after the merged result has passed.
+
+J. ~~**Say what a failure is.**~~ Done: "Cannot find package X" is reported as
+   *imported but not declared in package.json* (add it; the engine installs from it)
+   or *declared but not installed* (the install is the problem), in the gate output
+   and the repair prompt.
+
+K. ~~**A failed Autopilot run's branch shouldn't look landable.**~~ Done: a run that
+   stopped because a build/repair step failed (could not commit, ran out of money)
+   now leaves a branch marked **failed** by that step, not "unverified", on its card
+   and when it stands alone in Ready to land; the button reads "Land anyway…" and the
+   drawer says the run never passed and that Land cannot fix a problem in the
+   branch's own setup. Cancelled and interrupted runs still say nothing about the work.
+
+L. ~~**Stop repairing what repair cannot fix.**~~ Done: a repair (the builder resumed
+   after a failed check, or the agent repairing a merged result) that leaves the tree
+   unchanged **twice in a row** ends the run with what the agent said, instead of
+   spending the remaining attempts; once is allowed, because the brief tells it to
+   change nothing for an environmental failure and the re-test then passes. A repair
+   that changes something, or a gate passing, resets the count. (Land's own old
+   "three tests, two idle repairs" behaviour is now two tests.)
+
+M. **Check it on the real project.** Re-run Autopilot on the Three.js example
+   (its `main` already holds merges made while the gate verified nothing) and
+   record what it costs and where it still goes wrong. Package managers other than
+   npm (pnpm, yarn) fall back to the old behaviour for now.
+
 ### Backlog
 
 1. **A multi-branch Merge.** Today's Merge node lands one branch at a time.

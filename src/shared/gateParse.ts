@@ -209,6 +209,23 @@ function summarize(d: Detection | null, timedOut: boolean, exitCode: number | nu
 }
 
 /**
+ * The runner exited 0 but ran no tests at all ("No test files found, exiting
+ * with code 0", `--passWithNoTests`). Such a pass verifies nothing.
+ */
+export function ranNoTests(output: string): boolean {
+  const text = stripAnsi(output)
+  if (/\bFAIL\b|\d+\s+(failed|failing)\b|\d+ passed|\b[1-9]\d* passing\b/i.test(text)) return false
+  return (
+    /No test files found/i.test(text) ||
+    /No tests found/i.test(text) ||
+    /\bno tests ran\b/i.test(text) ||
+    /^\s*0 passing\b/m.test(text) ||
+    /Tests run:\s*0\b/.test(text) ||
+    /\brunning 0 tests\b/.test(text)
+  )
+}
+
+/**
  * `detail` is a gate's stored output exactly as the engine builds it:
  * `exit <code>\n<tail>` or `Timed out.\n<tail>`.
  */

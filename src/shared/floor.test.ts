@@ -12,6 +12,8 @@ function makeRun(opts: {
   end?: 'passed' | 'failed' | 'budget' | 'cancelled' | 'interrupted' | null
   awaiting?: boolean
   gatePass?: boolean
+  /** The build step itself failed (it could not commit, it ran out of money). */
+  buildFailed?: boolean
   branch?: string
   project?: string
   startedAt?: number
@@ -24,7 +26,7 @@ function makeRun(opts: {
   const ev: RunEvent[] = [
     { type: 'run.started', at: t, runId: id, projectId: opts.project ?? 'p1', projectName: 'repo', projectPath: '/r', flowSlug: 'f', blueprint: bp, inputs: {}, ceilingUsd: 5 },
     { type: 'node.started', at: t + 1, runId: id, nodeId: 'build', attempt: 1, cwd: '/w', branch: opts.branch, sessionId: opts.sessionId ?? `sess-${id}` },
-    { type: 'node.finished', at: t + 2, runId: id, nodeId: 'build', attempt: 1, status: 'passed', costUsd: opts.cost ?? 0.4, tokens: 10, summary: 'built', branch: opts.branch }
+    { type: 'node.finished', at: t + 2, runId: id, nodeId: 'build', attempt: 1, status: opts.buildFailed ? 'failed' : 'passed', costUsd: opts.cost ?? 0.4, tokens: 10, summary: 'built', branch: opts.branch }
   ]
   if (opts.awaiting) ev.push({ type: 'gate.awaiting', at: t + 3, runId: id, nodeId: 'tests', attempt: 1, instructions: 'check it' })
   else if (opts.gatePass !== undefined) ev.push({ type: 'gate.result', at: t + 3, runId: id, nodeId: 'tests', attempt: 1, pass: opts.gatePass, by: 'command', detail: 'out' })
@@ -104,6 +106,19 @@ describe('outcomes', () => {
     // The failed run and the branch it left are one task, and the failure is what needs you.
     expect(f.items).toHaveLength(1)
     expect(f.byLane.needs[0].verification?.state).toBe('failed')
+  })
+
+  it("a run that stopped because a build step failed leaves a FAILED branch, not an unverified one", () => {
+    const r = makeRun({ end: 'failed', buildFailed: true, branch: 'agentship/eee-build' })
+    expect(verificationOf(r)).toEqual({ state: 'failed', by: 'Builder' })
+    const b = makeRun({ end: 'budget', buildFailed: true, branch: 'agentship/fff-build' })
+    expect(verificationOf(b)).toEqual({ state: 'failed', by: 'Builder' })
+    // Stopping on purpose, or the app closing, says nothing about the work.
+    expect(verificationOf(makeRun({ end: 'cancelled', buildFailed: true }))).toEqual({ state: 'unverified' })
+    expect(verificationOf(makeRun({ end: 'interrupted' }))).toEqual({ state: 'unverified' })
+    // Once dismissed, the branch stands alone in Ready to land and still says so.
+    const f = derive({ runs: [r], branches: [branch({ branch: 'agentship/eee-build' })], acknowledged: new Set([r.runId]) })
+    expect(f.byLane.ready[0].verification).toEqual({ state: 'failed', by: 'Builder' })
   })
 
   it('ranks verified branches above unverified ones', () => {

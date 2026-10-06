@@ -134,9 +134,16 @@ const startOfDay = (t: number): number => {
  *  with no gate at all is honestly "unverified". */
 export function verificationOf(run: RunView): Verification {
   const gates = run.blueprint.nodes.filter((n) => n.kind === 'gate')
-  if (!gates.length) return { state: 'unverified' }
   const failed = gates.find((g) => run.nodes[g.id]?.state === 'failed')
   if (run.status !== 'passed' && failed) return { state: 'failed', by: failed.label || 'gate' }
+  // A run that stopped because a step failed (the builder could not commit, it
+  // ran out of money) did not produce verified work either, and its branch must
+  // not read as merely "unverified", which looks like nobody has looked yet.
+  if (run.status === 'failed' || run.status === 'budget') {
+    const broke = run.blueprint.nodes.find((n) => n.kind !== 'trigger' && run.nodes[n.id]?.state === 'failed')
+    if (broke) return { state: 'failed', by: broke.label || broke.kind }
+  }
+  if (!gates.length) return { state: 'unverified' }
   const allPassed = gates.every((g) => run.nodes[g.id]?.state === 'passed')
   if (run.status === 'passed' && allPassed) {
     return { state: 'verified', by: gates.map((g) => g.label || 'gate').join(', ') }

@@ -219,14 +219,31 @@ describe('repairing a merged result that fails its tests', () => {
     expect(gates.map((g) => g.type === 'gate.result' && g.pass)).toEqual([false, true])
   })
 
-  it('gives up after its attempts if the repair does not help, and main is untouched', async () => {
+  it('gives up once the repair has changed nothing twice in a row, without a third test, and main is untouched', async () => {
     const before = git('rev-parse', 'main')
     const adapter = new Fake(() => ok({ result: 'I changed nothing.' }))
     const { v } = await land({ test: bothPresentFails, adapter })
     expect(v.status).toBe('failed')
+    expect(v.reason).toMatch(/"Repair the merged result" changed nothing 2 times in a row/)
+    expect(v.reason).toMatch(/I changed nothing\./)
+    expect(adapter.reqs).toHaveLength(2)
+    expect(v.nodes.verify.attempts).toBe(2) // no third test of an unchanged tree
+    expect(v.nodes.land.state).toBe('idle')
+    expect(git('rev-parse', 'main')).toBe(before)
+    expect(worktreeCount()).toBe(1)
+  })
+
+  it('gives up after its attempts if the repair changes things but does not help, and main is untouched', async () => {
+    const before = git('rev-parse', 'main')
+    let n = 0
+    const adapter = new Fake((req) => {
+      fs.writeFileSync(path.join(req.cwd, `try-${++n}.txt`), 'x')
+      return ok({ result: 'I tried something.' })
+    })
+    const { v } = await land({ test: bothPresentFails, adapter })
+    expect(v.status).toBe('failed')
     expect(v.reason).toBe('Gate "Test the merged result" still failing after 3 attempts (retry cap 2).')
     expect(adapter.reqs).toHaveLength(2) // a repair between each of the three tests
-    expect(v.nodes.land.state).toBe('idle')
     expect(git('rev-parse', 'main')).toBe(before)
     expect(worktreeCount()).toBe(1)
   })

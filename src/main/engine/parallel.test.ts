@@ -103,7 +103,9 @@ describe('parallel copies', () => {
       if (isJudge(req)) return ok({ costUsd: 0.05, structured: { winner: 2, reason: 'smallest change' } })
       const n = copyOf(req)
       fs.writeFileSync(path.join(req.cwd, `attempt-${n}.txt`), `copy ${n}\n`)
-      await sleep(80)
+      // Wait until all three are in flight. A fixed sleep raced the time a git
+      // worktree takes to create, which varies a lot on a loaded machine.
+      for (let i = 0; i < 300 && fake.live < 3; i++) await sleep(10)
       return ok({ result: `did it my way (${n})` })
     })
     const { engine, events } = harness(fake)

@@ -11,11 +11,13 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parallelSection, renderTemplate, unrunnableReasons, usdCeiling } from '../../shared/blueprint'
-import { repairFeedback } from '../../shared/gateParse'
+import { ranNoTests, repairFeedback } from '../../shared/gateParse'
 import { RESOLVER_PROMPT } from '../../shared/patterns'
 import { foldRun, isResumable, promptVars, type NodeRun, type RunEvent, type RunView } from '../../shared/runs'
 import type { Blueprint, BlueprintNode } from '../../shared/schema'
 import { killTree, type AgentAdapter, type StepResult } from './adapter'
+import { missingPackageHint, syncDependencies, type Installer } from './deps'
+import { projectEnv } from './env'
 import * as git from './gitops'
 import { freshSeed, nextNode, planResume, type Seed } from './resume'
 
@@ -26,6 +28,10 @@ export interface EngineDeps {
   /** Persists then broadcasts. Must be synchronous with respect to ordering. */
   emit: (event: RunEvent) => void
   now?: () => number
+  /** Where installed dependencies are cached, one entry per distinct manifest. Defaults to a sibling of `worktreeRoot`. */
+  depsRoot?: string
+  /** Test seam: how a manifest is installed. Defaults to npm. */
+  install?: Installer
 }
 
 export interface StartArgs {
@@ -52,6 +58,15 @@ const JUDGE_SCHEMA = JSON.stringify({
   properties: { winner: { type: 'integer' }, reason: { type: 'string' } },
   required: ['winner', 'reason']
 })
+/**
+ * A repair that changes nothing is legitimate once: the brief tells the agent to
+ * leave an environmental failure (a timeout, a locked temp file) alone, and the
+ * re-test then passes. Twice in a row means the agent can neither fix it nor
+ * explain it away, and the remaining attempts would only spend money repeating
+ * the same failure.
+ */
+const IDLE_REPAIRS_LIMIT = 2
+
 /** The steps that only read and judge (the tournament judge, the conflict resolver) do not need the most capable model. */
 const JUDGING_MODEL = 'sonnet'
 const AGENT_GATE_SCHEMA = JSON.stringify({
@@ -78,6 +93,8 @@ interface Ctx {
   executions: number
   /** Dollars this walker's own steps have spent (a judge's cheapest-copy fallback). */
   cost: number
+  /** Repairs in a row that left the tree exactly as it was (see `IDLE_REPAIRS_LIMIT`). */
+  idleRepairs?: number
   /** Set inside a parallel copy (1-based). */
   copy?: { index: number; total: number }
   /** What this copy's nodes returned, shadowing the run-wide results in prompts. */
@@ -324,6 +341,10 @@ export class RunEngine {
     }
     const copyFields = (c: Ctx): { copy?: number; copies?: number } => (c.copy ? { copy: c.copy.index, copies: c.copy.total } : {})
 
+    const depsRoot = this.deps.depsRoot ?? path.join(path.dirname(this.deps.worktreeRoot), 'deps')
+    const syncDeps = (cwd: string, signal: AbortSignal): ReturnType<typeof syncDependencies> =>
+      syncDependencies({ cwd, project: a.projectPath, cacheRoot: depsRoot, signal, install: this.deps.install }).catch((err: Error) => ({ ok: false as const, reason: err.message }))
+
     // --- one agent step -----------------------------------------------------------
     const agentStep = async (c: Ctx, node: Extract<BlueprintNode, { kind: 'agent' }>, attempt: number): Promise<Step> => {
       const remaining = remainingUsd()
@@ -346,6 +367,10 @@ export class RunEngine {
         stepBranch = wt.branch
       }
       if (prior) stepCwd = prior.cwd
+      // What the branch's own package.json declares, installed before the agent
+      // works so it can run the tests itself. Best effort: a failure surfaces at
+      // the gate, with the install output.
+      if (node.config.worktree) await syncDeps(stepCwd, c.signal)
 
       const sessionId = prior?.id ?? crypto.randomUUID()
       const resume = Boolean(prior)
@@ -395,9 +420,10 @@ export class RunEngine {
 
       // Whatever the agent left becomes commits on its branch, so the
       // work survives the worktree being removed.
+      let changed: boolean | undefined
       if (node.config.worktree && stepBranch) {
         try {
-          await git.commitAll(stepCwd, `agentship: ${node.label || node.config.role} (${bp.name})`)
+          changed = await git.commitAll(stepCwd, `agentship: ${node.label || node.config.role} (${bp.name})`)
         } catch (err) {
           res.ok = false
           res.error = `Could not commit the agent's work: ${(err as Error).message}`
@@ -411,7 +437,8 @@ export class RunEngine {
       // branch itself is still untouched until Land.
       if (integ && !node.config.worktree && stepCwd === integ.wt.path) {
         try {
-          if (await git.commitAll(stepCwd, `agentship: ${node.label || node.config.role} (${bp.name})`)) integ.sha = await git.head(stepCwd)
+          changed = await git.commitAll(stepCwd, `agentship: ${node.label || node.config.role} (${bp.name})`)
+          if (changed) integ.sha = await git.head(stepCwd)
         } catch (err) {
           res.ok = false
           res.error = `Could not commit the repair: ${(err as Error).message}`
@@ -459,6 +486,17 @@ export class RunEngine {
       if (res.budgetExhausted) return { stop: { status: 'budget', reason: `"${label}" hit its dollar limit.` } }
       if (tokenBust) return { stop: { status: 'budget', reason: `"${label}" exceeded its token limit.` } }
       if (!res.ok) return { stop: { status: 'failed', reason: `"${label}" failed: ${res.error ?? 'unknown error'}` } }
+
+      // Only a repair counts: the first attempt at a step may legitimately change nothing.
+      const repairing = resume || Boolean(integ && !node.config.worktree && stepCwd === integ.wt.path)
+      if (repairing && changed === false) {
+        c.idleRepairs = (c.idleRepairs ?? 0) + 1
+        if (c.idleRepairs >= IDLE_REPAIRS_LIMIT) {
+          return { stop: { status: 'failed', reason: `"${label}" changed nothing ${c.idleRepairs} times in a row, so the failure is not one it can repair. What it said: ${clip(summary, 600)}` } }
+        }
+      } else if (changed) {
+        c.idleRepairs = 0
+      }
 
       c.upstream = summary
       return { next: outEdge(node, 'next') }
@@ -535,16 +573,41 @@ export class RunEngine {
           }
         }
       } else {
-        const out = await runCommand(node.config.command, c.cwd, (node.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000, c.signal)
-        pass = out.code === 0
-        detail = out.timedOut ? `Timed out.\n${out.tail}` : `exit ${out.code}\n${out.tail}`
+        // Dependencies first: what THIS copy's package.json declares, installed
+        // or linked, so the command answers for the project and nothing else.
+        const env = await syncDeps(c.cwd, c.signal)
+        if (!env.ok) {
+          detail = `exit 1\n${env.reason}`
+        } else {
+          const out = await runCommand(node.config.command, c.cwd, (node.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000, c.signal)
+          pass = out.code === 0
+          detail = out.timedOut ? `Timed out.\n${out.tail}` : `exit ${out.code}\n${out.tail}`
+          if (pass && node.config.requireTests && ranNoTests(out.tail)) {
+            pass = false
+            detail = [
+              'exit 0, but NO TESTS RAN, so this gate verified nothing.',
+              'Write at least one real test for what you built (the plan item\'s "Done when" line says what to check).',
+              'Do not change the test script or its flags to tolerate having no tests.',
+              '',
+              out.tail
+            ].join('\n')
+          }
+        }
       }
 
+      // A missing package is an environment fact, not a code failure: say which.
+      const hint = !pass && by === 'command' ? missingPackageHint(detail, c.cwd) : ''
+      if (hint) detail = `${detail}
+
+${hint}`
       emit({ type: 'gate.result', at: this.now(), runId, nodeId: node.id, attempt, pass, by, detail: clip(detail, 6_000) })
       if (stop) return { stop }
       if (c.signal.aborted) return { stop: stopOf(c) }
 
-      if (pass) return { next: outEdge(node, 'pass') }
+      if (pass) {
+        c.idleRepairs = 0
+        return { next: outEdge(node, 'pass') }
+      }
 
       const failCount = (c.fails.get(node.id) ?? 0) + 1
       c.fails.set(node.id, failCount)
@@ -557,7 +620,9 @@ export class RunEngine {
       // A recognised test/lint runner's own failure list makes a far more
       // addressable prompt than a raw output tail; falls back to the tail
       // untouched when the tool or its format isn't one we know.
-      c.feedback = repairFeedback(detail)
+      c.feedback = hint ? `${repairFeedback(detail.slice(0, detail.length - hint.length - 2))}
+
+${hint}` : repairFeedback(detail)
       return { next: repair }
     }
 
@@ -983,7 +1048,7 @@ function runCommand(
   return new Promise((resolve) => {
     let buf = ''
     let timedOut = false
-    const child = spawn(command, { cwd, shell: true, windowsHide: true, env: process.env, detached: process.platform !== 'win32' })
+    const child = spawn(command, { cwd, shell: true, windowsHide: true, env: projectEnv(process.env, cwd), detached: process.platform !== 'win32' })
     const keep = (d: Buffer): void => {
       buf = (buf + d.toString()).slice(-12_000)
     }

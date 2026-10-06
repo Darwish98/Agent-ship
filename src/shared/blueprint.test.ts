@@ -11,7 +11,7 @@ import {
   usdCeiling,
   validateBlueprint
 } from './blueprint'
-import { buildPlanBlueprint, DESIGN_FILE, emptyBlueprint, fromPattern, OVERVIEW_FILE, PATTERNS, PLAN_FILE, PLANNING_DIR } from './patterns'
+import { buildPlanBlueprint, DESIGN_FILE, emptyBlueprint, fromPattern, isStaleShippedAutopilot, OVERVIEW_FILE, PATTERNS, PLAN_FILE, PLANNING_DIR } from './patterns'
 import { promptVars } from './runs'
 import { parseBlueprint, type Blueprint } from './schema'
 
@@ -253,6 +253,53 @@ describe('run planning helpers', () => {
     expect(unrunnableReasons(fromPattern(PATTERNS[2]))).toEqual([])
     expect(unrunnableReasons(fromPattern(PATTERNS[3]))).toEqual([])
     expect(unrunnableReasons(fromPattern(PATTERNS[4]))).toEqual([])
+  })
+
+  it('Autopilot verifies what lands: tests on the branch, then on the MERGED result (repairable), then land, and no gate may pass on zero tests', () => {
+    const bp = fromPattern(PATTERNS[4])
+    const flow = bp.edges.map((e) => `${e.from}->${e.to}${e.condition === 'always' ? '' : `:${e.condition}`}`)
+    expect(flow).toEqual(
+      expect.arrayContaining([
+        'build->tests', 'tests->merge:pass', 'tests->build:fail', 'merge->verify',
+        'verify->land:pass', 'verify->repair:fail', 'repair->verify', 'land->plancheck', 'plancheck->build:fail'
+      ])
+    )
+    // Nothing reaches land without passing the merged-result gate.
+    expect(bp.edges.filter((e) => e.to === 'land').map((e) => e.from)).toEqual(['verify'])
+    for (const id of ['tests', 'verify']) {
+      const g = bp.nodes.find((n) => n.id === id)!
+      expect(g.kind === 'gate' && g.config.requireTests).toBe(true)
+    }
+    // The builder is told how it is checked, and not to tamper with the check.
+    const build = bp.nodes.find((n) => n.id === 'build')!
+    expect(build.kind === 'agent' && build.config.prompt).toMatch(/Never edit the test script/)
+    expect(build.kind === 'agent' && build.config.prompt).toMatch(/Declare every package you import in package\.json/)
+    expect(unrunnableReasons(bp)).toEqual([])
+  })
+
+  it('replaces only an untouched copy of the old Autopilot flow saved in a project', () => {
+    const current = fromPattern(PATTERNS[4])
+    expect(isStaleShippedAutopilot(current)).toBe(false)
+
+    // What earlier versions saved: six nodes, version 1, a plain `npm test` gate.
+    const v1 = fromPattern(PATTERNS[4])
+    v1.version = 1
+    v1.nodes = v1.nodes.filter((n) => !['verify', 'repair'].includes(n.id))
+    expect(isStaleShippedAutopilot(v1)).toBe(true)
+
+    // The person changed the test command: theirs, left alone.
+    const edited = JSON.parse(JSON.stringify(v1)) as Blueprint
+    const tests = edited.nodes.find((n) => n.id === 'tests')!
+    if (tests.kind === 'gate') tests.config.command = 'pnpm test'
+    expect(isStaleShippedAutopilot(edited)).toBe(false)
+
+    // Or added a node of their own.
+    const extended = JSON.parse(JSON.stringify(v1)) as Blueprint
+    extended.nodes.push({ ...extended.nodes[1], id: 'extra' })
+    expect(isStaleShippedAutopilot(extended)).toBe(false)
+
+    // Some other flow that happens to be called Autopilot, already current.
+    expect(isStaleShippedAutopilot({ ...v1, name: 'Mine' })).toBe(false)
   })
 
   describe('parallel sections', () => {

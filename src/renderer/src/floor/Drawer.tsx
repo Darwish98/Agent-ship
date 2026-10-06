@@ -212,10 +212,16 @@ function BranchPanel({
         <dt>Latest</dt>
         <dd>{b.subject}</dd>
       </dl>
+      {item.verification?.state === 'failed' && !landing && (
+        <p className="rd-note">
+          The run that built this branch did not pass: it stopped at "{item.verification.by}". It was never verified. Landing it merges and tests the result
+          again, and an agent may try to repair that, but it will not fix a problem in the branch's own setup.
+        </p>
+      )}
       <div className="rd-actions">
         {!landing && (
           <button type="button" className="btn btn-primary" onClick={() => actions.land(item)}>
-            {item.lane === 'needs' ? 'Try landing again…' : 'Land…'}
+            {item.lane === 'needs' ? 'Try landing again…' : item.verification?.state === 'failed' ? 'Land anyway…' : 'Land…'}
           </button>
         )}
         {item.authors.some((a) => a.endsWith(' run')) && (

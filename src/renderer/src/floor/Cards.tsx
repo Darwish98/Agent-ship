@@ -239,7 +239,7 @@ export function BranchCard(props: CardProps): JSX.Element {
           </>
         ) : (
           <button type="button" className="btn btn-primary fc-btn" onClick={() => actions.land(item)}>
-            Land…
+            {item.verification?.state === 'failed' ? 'Land anyway…' : 'Land…'}
           </button>
         )}
       </div>

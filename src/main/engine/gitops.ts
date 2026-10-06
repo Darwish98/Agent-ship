@@ -198,6 +198,9 @@ export async function commitAll(cwd: string, message: string): Promise<boolean> 
 /** Removes the working directory but keeps the branch and its commits. */
 export async function removeWorktree(repo: string, wt: Worktree): Promise<void> {
   unlinkDependencies(wt.depsLink)
+  // The dependency stage may have linked a node_modules after creation; whatever
+  // is linked must be unlinked, never removed through.
+  unlinkDependencies(path.join(wt.path, 'node_modules'))
   try {
     await git(repo, ['worktree', 'remove', '--force', wt.path], 60_000)
   } catch {

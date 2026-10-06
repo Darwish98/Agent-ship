@@ -219,3 +219,24 @@ describe('repairFeedback', () => {
     expect(fb).toContain('…and 3 more.')
   })
 })
+
+describe('ranNoTests', () => {
+  it('recognises a runner that exited 0 having run nothing', async () => {
+    const { ranNoTests } = await import('./gateParse')
+    expect(ranNoTests('RUN  v3.2.7 /x\n\nNo test files found, exiting with code 0\n')).toBe(true)
+    expect(ranNoTests('\x1b[31mNo tests found, exiting with code 0\x1b[39m')).toBe(true)
+    expect(ranNoTests('============ no tests ran in 0.01s ============')).toBe(true)
+    expect(ranNoTests('  0 passing (2ms)')).toBe(true)
+    expect(ranNoTests('Tests run: 0, Failures: 0')).toBe(true)
+    expect(ranNoTests('running 0 tests\n\ntest result: ok. 0 passed; 0 failed')).toBe(false) // has a "0 passed" count line: cargo reports per binary, so not trusted
+  })
+
+  it('is false whenever any test actually ran or failed', async () => {
+    const { ranNoTests } = await import('./gateParse')
+    expect(ranNoTests('Test Files  1 passed (1)\n     Tests  4 passed (4)')).toBe(false)
+    expect(ranNoTests('  3 passing (5ms)')).toBe(false)
+    expect(ranNoTests('FAIL src/a.test.ts\nNo test files found for other project')).toBe(false)
+    expect(ranNoTests('2 failed | 1 passed')).toBe(false)
+    expect(ranNoTests('')).toBe(false)
+  })
+})
