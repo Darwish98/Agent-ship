@@ -242,6 +242,9 @@ export function validateBlueprint(bp: Blueprint): Problem[] {
         if (n.config.check === 'command' && !n.config.command.trim()) {
           add('error', `Gate "${nameOf(n)}" has no command to run.`, n.id)
         }
+        if (n.config.check === 'plan' && !(n.config.planFile ?? '').trim()) {
+          add('error', `Gate "${nameOf(n)}" has no plan file to read.`, n.id)
+        }
         if (n.config.check === 'agent' && !n.config.agentPrompt.trim()) {
           add('error', `Gate "${nameOf(n)}" has no question for the agent to judge.`, n.id)
         }
@@ -589,7 +592,7 @@ export function summarizeRun(bp: Blueprint): RunSummary {
       if (n.config.check === 'command') summary.commands.push({ label: n.label || 'Gate', command: n.config.command })
       else if (n.config.check === 'agent') {
         summary.agentGates.push({ label: n.label || 'Gate', maxRetries: n.budget?.maxRetries ?? 0, maxUsd: n.budget?.maxUsd ?? bp.defaultBudget.maxUsd ?? null })
-      } else summary.humanGates.push(n.label || 'Gate')
+      } else if (n.config.check === 'human') summary.humanGates.push(n.label || 'Gate')
     }
   }
   return summary

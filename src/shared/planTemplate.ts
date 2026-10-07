@@ -79,13 +79,14 @@ export function planDoc(id: PlanDocId): PlanDoc {
   return PLAN_TEMPLATE.find((d) => d.id === id)!
 }
 
-/** The format every PLAN item follows. The last line is what the Autopilot
- *  plan-check reads to decide whether an item is finished. */
+/** The format every PLAN item follows. The `- [ ]` box is how Autopilot tracks
+ *  progress (it ticks `- [x]` when an item lands, and stops when none is left); the
+ *  "Done when" line is what the final plan-check reads to confirm an item is real. */
 export const PLAN_ITEM_FORMAT = [
-  '1. **Short title.** What to build, naming real files, commands and behaviour.',
-  '   Why: one line, or a link to the section of OVERVIEW/DESIGN it comes from.',
-  '   Done when: one concrete, checkable condition (a command that passes, a',
-  '   behaviour that can be observed). Not "works well".'
+  '- [ ] 1. **Short title.** What to build, naming real files, commands and behaviour.',
+  '      Why: one line, or a link to the section of OVERVIEW/DESIGN it comes from.',
+  '      Done when: one concrete, checkable condition (a command that passes, a',
+  '      behaviour that can be observed). Not "works well".'
 ].join('\n')
 
 /** The empty document, headings and hints only: what "Paste a plan" and a

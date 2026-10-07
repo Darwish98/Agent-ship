@@ -86,7 +86,7 @@ describe('autopilot pipeline', () => {
     })
     const { events, v } = await run(fake, autopilot(needs('built.txt')))
     expect(v.status).toBe('passed')
-    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'land', 'plancheck'])
+    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'land', 'progress', 'plancheck'])
     expect(onMain('built.txt')).toBe(true)
     // The second test ran on the merge's scratch copy, not on the builder's branch.
     const verify = events.find((e) => e.type === 'node.started' && e.nodeId === 'verify') as { cwd?: string }
@@ -121,7 +121,7 @@ describe('autopilot pipeline', () => {
     // The branch is fine on its own; the merged result needs a file only the repair adds.
     const { events, v } = await run(fake, autopilot(needs('built.txt'), needs('fixed.txt')))
     expect(v.status).toBe('passed')
-    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'repair', 'verify', 'land', 'plancheck'])
+    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'repair', 'verify', 'land', 'progress', 'plancheck'])
     expect(onMain('fixed.txt')).toBe(true)
   })
 
@@ -153,7 +153,7 @@ describe('a repair that changes nothing', () => {
     })
     const { events, v } = await run(fake, autopilot(needs('built.txt'), flaky()))
     expect(v.status).toBe('passed')
-    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'repair', 'verify', 'land', 'plancheck'])
+    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'repair', 'verify', 'land', 'progress', 'plancheck'])
   })
 
   it('twice in a row ends the run with what the agent said, instead of spending the remaining attempts', async () => {
@@ -211,7 +211,7 @@ describe('dependencies a branch adds', () => {
     const { events, v } = await run(fake, autopilot(usesDep), installer(calls))
     expect(v.status).toBe('passed')
     expect(calls).toHaveLength(1) // same manifest in the worktree and the merged copy
-    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'land', 'plancheck'])
+    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'land', 'progress', 'plancheck'])
     expect(onMain('package.json')).toBe(true)
     expect(git('ls-tree', '-r', '--name-only', 'main')).not.toContain('node_modules')
   })
@@ -267,5 +267,131 @@ describe('dependencies a branch adds', () => {
     const g = events.find((e) => e.type === 'gate.result') as { detail: string }
     expect(g.detail).toMatch(/Installing the project's dependencies failed/)
     expect(g.detail).toMatch(/404 Not Found/)
+  })
+})
+
+describe('progress is counted from the plan, and each item gets a fresh session', () => {
+  const tick = (cwd: string): void => {
+    const file = path.join(cwd, 'planning', 'PLAN.md')
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('- [ ]', '- [x]'))
+  }
+  const threeItems = (): void => {
+    fs.writeFileSync(path.join(repo, 'planning', 'PLAN.md'), '- [ ] 1. **One.**\n- [ ] 2. **Two.**\n- [ ] 3. **Three.**\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'plan with tick-boxes')
+  }
+  const counter = (): string => path.join(root, 'ran').split(path.sep).join('/')
+  /** Counts how many times it actually runs, and prints a passing test summary. */
+  const counting = (): string => `node -e "require('fs').appendFileSync('${counter()}','x');console.log('Tests  1 passed (1)')"`
+
+  it('works the items one per pass until none is left, asks the agent once at the end, and never per item', async () => {
+    threeItems()
+    let audits = 0
+    const fake = new Fake((req) => {
+      if (isPlanCheck(req)) {
+        audits++
+        return ok({ structured: { done: true, reason: 'verified' } })
+      }
+      if (isBuilder(req)) {
+        tick(req.cwd)
+        fs.writeFileSync(path.join(req.cwd, `item-${fake.reqs.length}.txt`), 'x')
+      }
+      return ok({ sessionId: req.sessionId })
+    })
+    const { events, v } = await run(fake, autopilot(counting()))
+    expect(v.status).toBe('passed')
+    expect(audits).toBe(1) // not one per item
+    expect(order(events).filter((n) => n === 'build')).toHaveLength(3)
+    expect(order(events).filter((n) => n === 'progress')).toHaveLength(3)
+    expect(order(events).filter((n) => n === 'land')).toHaveLength(3)
+    expect(fs.readFileSync(path.join(repo, 'planning', 'PLAN.md'), 'utf8')).not.toContain('- [ ]')
+    const results = events.filter((e) => e.type === 'gate.result' && e.nodeId === 'progress') as { pass: boolean; detail: string }[]
+    expect(results.map((r) => r.pass)).toEqual([false, false, true])
+    expect(results[0].detail).toMatch(/1 of 3 items.*Next: 2\. \*\*Two\.\*\*/)
+  })
+
+  it('every pass starts the builder fresh with the plan prompt, not a resumed ever-longer conversation', async () => {
+    threeItems()
+    const fake = new Fake((req) => {
+      if (isPlanCheck(req)) return ok({ structured: { done: true, reason: '' } })
+      if (isBuilder(req)) {
+        tick(req.cwd)
+        fs.writeFileSync(path.join(req.cwd, `item-${fake.reqs.length}.txt`), 'x')
+      }
+      return ok({ sessionId: req.sessionId })
+    })
+    await run(fake, autopilot(counting()))
+    const builds = fake.reqs.filter(isBuilder)
+    expect(builds).toHaveLength(3)
+    expect(builds.map((b) => b.resume)).toEqual([false, false, false])
+    expect(new Set(builds.map((b) => b.sessionId)).size).toBe(3)
+    for (const b of builds) expect(b.prompt).toMatch(/Implement the SINGLE next unfinished item/)
+    expect(builds[1].prompt).toMatch(/1 of 3 items.*are ticked/) // told what is left
+  })
+
+  it('a failed TEST still resumes the same session: that is a repair, not the next item', async () => {
+    const fake = new Fake((req) => {
+      if (isPlanCheck(req)) return ok({ structured: { done: true, reason: '' } })
+      if (isBuilder(req) && req.resume) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
+      return ok({ sessionId: req.sessionId })
+    })
+    const { v } = await run(fake, autopilot(needs('built.txt')))
+    expect(v.status).toBe('passed')
+    expect(fake.reqs.filter(isBuilder).map((b) => b.resume)).toEqual([false, true])
+  })
+
+  it('the merged result is not tested again when it is exactly the tree that just passed', async () => {
+    const fake = new Fake((req) => {
+      if (isPlanCheck(req)) return ok({ structured: { done: true, reason: '' } })
+      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
+      return ok()
+    })
+    const { events, v } = await run(fake, autopilot(counting()))
+    expect(v.status).toBe('passed')
+    expect(fs.readFileSync(counter(), 'utf8')).toBe('x') // ran once, not twice
+    const verify = events.find((e) => e.type === 'gate.result' && e.nodeId === 'verify') as { pass: boolean; detail: string }
+    expect(verify.pass).toBe(true)
+    expect(verify.detail).toMatch(/Skipped: this exact tree already passed/)
+  })
+
+  it('but a merged result that differs from what was tested IS tested, and a repair is tested after it changes the tree', async () => {
+    const fake = new Fake((req) => {
+      if (isPlanCheck(req)) return ok({ structured: { done: true, reason: '' } })
+      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
+      if (isRepair(req)) fs.writeFileSync(path.join(req.cwd, 'fixed.txt'), 'x')
+      return ok()
+    })
+    const { events, v } = await run(fake, autopilot(needs('built.txt'), needs('fixed.txt')))
+    expect(v.status).toBe('passed')
+    const verifies = events.filter((e) => e.type === 'gate.result' && e.nodeId === 'verify') as { pass: boolean; detail: string }[]
+    expect(verifies.map((x) => x.pass)).toEqual([false, true])
+    expect(verifies[1].detail).not.toMatch(/Skipped/)
+  })
+
+  it('a plan with no tick-boxes falls back to asking the agent each pass', async () => {
+    let audits = 0
+    const fake = new Fake((req) => {
+      if (isPlanCheck(req)) return ok({ structured: { done: ++audits >= 2, reason: 'not yet' } })
+      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, `item-${fake.reqs.length}.txt`), 'x')
+      return ok({ sessionId: req.sessionId })
+    })
+    const { v } = await run(fake, autopilot(needs('item-2.txt').replace('item-2.txt', 'planning/PLAN.md')))
+    expect(v.status).toBe('passed')
+    expect(audits).toBe(2)
+  })
+
+  it('stops with a clear reason when the plan is still unfinished at the pass cap', async () => {
+    threeItems()
+    const fake = new Fake((req) => {
+      // The builder never ticks anything, so the plan never shrinks.
+      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, `item-${fake.reqs.length}.txt`), 'x')
+      return ok({ sessionId: req.sessionId })
+    })
+    const bp = autopilot(counting())
+    for (const n of bp.nodes) if (n.id === 'progress') n.budget = { maxRetries: 2 }
+    const { v } = await run(fake, bp)
+    expect(v.status).toBe('failed')
+    expect(v.reason).toMatch(/Stopped after 3 passes with the plan unfinished \(the cap is 2\)/)
+    expect(v.reason).toMatch(/0 of 3 items/)
   })
 })

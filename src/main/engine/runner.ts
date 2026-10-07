@@ -341,6 +341,9 @@ export class RunEngine {
     }
     const copyFields = (c: Ctx): { copy?: number; copies?: number } => (c.copy ? { copy: c.copy.index, copies: c.copy.total } : {})
 
+    // A command gate that passed on exactly this tree, so the same command on the
+    // same tree is not run again (the merged result is usually the tested branch).
+    const passedTrees = new Map<string, string>()
     const depsRoot = this.deps.depsRoot ?? path.join(path.dirname(this.deps.worktreeRoot), 'deps')
     const syncDeps = (cwd: string, signal: AbortSignal): ReturnType<typeof syncDependencies> =>
       syncDependencies({ cwd, project: a.projectPath, cacheRoot: depsRoot, signal, install: this.deps.install }).catch((err: Error) => ({ ok: false as const, reason: err.message }))
@@ -572,6 +575,29 @@ export class RunEngine {
             detail = typeof s?.reason === 'string' && s.reason.trim() ? s.reason.trim() : pass ? 'Done.' : 'Not done yet.'
           }
         }
+      } else if (node.config.check === 'plan') {
+        const rel = renderTemplate(node.config.planFile ?? '', promptVars(view(), c.upstream, { branch: c.branch ?? '' })).trim()
+        const file = path.resolve(c.cwd, rel)
+        const root = path.resolve(c.cwd)
+        if (!rel || !(file === root || file.startsWith(root + path.sep))) {
+          stop = { status: 'failed', reason: `"${node.label || 'gate'}" points at "${rel}", which is not a file inside the project.` }
+          detail = 'Bad plan path.'
+        } else if (!fs.existsSync(file)) {
+          stop = { status: 'failed', reason: `The plan "${rel}" was not found.` }
+          detail = 'No plan file.'
+        } else {
+          const items = [...fs.readFileSync(file, 'utf8').matchAll(/^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s*(.*)$/gm)]
+          const open = items.filter((m) => m[1] === ' ')
+          if (items.length === 0) {
+            pass = true
+            detail = `${rel} has no tick-box items (- [ ]), so progress is left to the next check.`
+          } else if (open.length === 0) {
+            pass = true
+            detail = `All ${items.length} items in ${rel} are ticked.`
+          } else {
+            detail = `${items.length - open.length} of ${items.length} items in ${rel} are ticked. Next: ${clip(open[0][2].trim(), 200)}`
+          }
+        }
       } else {
         // Dependencies first: what THIS copy's package.json declares, installed
         // or linked, so the command answers for the project and nothing else.
@@ -579,10 +605,14 @@ export class RunEngine {
         if (!env.ok) {
           detail = `exit 1\n${env.reason}`
         } else {
-          const out = await runCommand(node.config.command, c.cwd, (node.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000, c.signal)
+          const treeId = await git.workingTreeId(c.cwd).catch(() => '')
+          const seen = treeId ? passedTrees.get(`${node.config.command}\0${treeId}`) : undefined
+          const out = seen
+            ? { code: 0, timedOut: false, tail: `Skipped: this exact tree already passed this command at "${seen}".` }
+            : await runCommand(node.config.command, c.cwd, (node.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000, c.signal)
           pass = out.code === 0
           detail = out.timedOut ? `Timed out.\n${out.tail}` : `exit ${out.code}\n${out.tail}`
-          if (pass && node.config.requireTests && ranNoTests(out.tail)) {
+          if (pass && node.config.requireTests && !seen && ranNoTests(out.tail)) {
             pass = false
             detail = [
               'exit 0, but NO TESTS RAN, so this gate verified nothing.',
@@ -592,6 +622,7 @@ export class RunEngine {
               out.tail
             ].join('\n')
           }
+          if (pass && treeId && !seen) passedTrees.set(`${node.config.command}\0${treeId}`, node.label || 'a gate')
         }
       }
 
@@ -615,11 +646,22 @@ ${hint}`
       const maxRetries = node.budget?.maxRetries ?? 0
       if (!repair) return { stop: { status: 'failed', reason: `Gate "${node.label || 'gate'}" failed.` } }
       if (failCount > maxRetries) {
+        if (node.config.check === 'plan') {
+          return { stop: { status: 'failed', reason: `Stopped after ${failCount} passes with the plan unfinished (the cap is ${maxRetries}). ${detail}` } }
+        }
         return { stop: { status: 'failed', reason: `Gate "${node.label || 'gate'}" still failing after ${failCount} attempt${failCount === 1 ? '' : 's'} (retry cap ${maxRetries}).` } }
       }
       // A recognised test/lint runner's own failure list makes a far more
       // addressable prompt than a raw output tail; falls back to the tail
       // untouched when the tool or its format isn't one we know.
+      // "Go round again" (the plan has more items, or an agent says it is not done) is
+      // the NEXT piece of work, not a repair of the last one: start the builder fresh
+      // instead of resuming one ever-growing conversation, and tell it what is left.
+      if (node.config.check === 'agent' || node.config.check === 'plan') {
+        if (repair.kind === 'agent') c.sessions.delete(repair.id)
+        c.feedback = detail
+        return { next: repair }
+      }
       c.feedback = hint ? `${repairFeedback(detail.slice(0, detail.length - hint.length - 2))}
 
 ${hint}` : repairFeedback(detail)

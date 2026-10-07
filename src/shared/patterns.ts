@@ -369,6 +369,12 @@ const AUTOPILOT_BUILD_PROMPT = [
   '  Never rely on a globally installed tool.',
   '- Never edit the test script or its flags to make a check pass.',
   '',
+  'Tracking progress: items in the plan are tick-boxes. When this item is finished and its',
+  'tests pass, tick it in the plan file by changing its `- [ ]` to `- [x]` (change nothing',
+  'else in the plan). That is how the loop knows what is left.',
+  'If every item is already ticked but a check below says something is missing, build what',
+  'it reports, and un-tick (or add) the matching item so the plan tells the truth.',
+  '',
   'When you are done, reply with a short summary of what you implemented and',
   'which item of the plan it corresponds to.'
 ].join('\n')
@@ -386,8 +392,9 @@ const AUTOPILOT_CHECK_PROMPT = [
   'sentences saying what, if anything, is still missing"}.'
 ].join('\n')
 
-/** Bumped when the shipped Autopilot changes shape. v2: the merged result is tested and repaired before landing. */
-export const AUTOPILOT_VERSION = 2
+/** Bumped when the shipped Autopilot changes shape. v2: the merged result is tested and repaired before landing.
+ *  v3: progress is read from the plan's tick-boxes (no agent call per item) and each item gets a fresh session. */
+export const AUTOPILOT_VERSION = 3
 
 /**
  * A project's saved Autopilot flow that is still exactly the shipped v1 (the
@@ -397,10 +404,13 @@ export const AUTOPILOT_VERSION = 2
 export function isStaleShippedAutopilot(bp: Blueprint): boolean {
   if (bp.name !== 'Autopilot' || bp.version >= AUTOPILOT_VERSION) return false
   const ids = bp.nodes.map((n) => n.id).sort().join(',')
-  if (ids !== 'build,land,merge,plancheck,start,tests') return false
+  if (ids !== 'build,land,merge,plancheck,start,tests' && ids !== 'build,land,merge,plancheck,repair,start,tests,verify') return false
   const tests = bp.nodes.find((n) => n.id === 'tests')
   return tests?.kind === 'gate' && tests.config.command === 'npm test'
 }
+
+/** The most plan items one Autopilot run works through. */
+const AUTOPILOT_MAX_ITEMS = 25
 
 const AUTOPILOT: Blueprint = {
   schemaVersion: SCHEMA_VERSION,
@@ -438,7 +448,15 @@ const AUTOPILOT: Blueprint = {
       // The loop primitive: this gate's `fail` edge is "not done yet, go
       // around again"; its retry cap is the run's hard stop regardless of
       // what the agent decides, so a confused judge can never run forever.
-      id: 'plancheck', kind: 'gate', label: 'Plan fully done?', position: at(6), budget: { maxRetries: 8, maxUsd: 0.3 },
+      // Progress is counted from the plan's tick-boxes: free and instant, instead of
+      // an agent call after every item. Its retry cap is the most items one run does.
+      id: 'progress', kind: 'gate', label: 'Items left in the plan?', position: at(6), budget: { maxRetries: AUTOPILOT_MAX_ITEMS },
+      config: { check: 'plan', planFile: '{{plan}}', command: '', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
+    },
+    {
+      // Only asked once the checklist says everything is done: an independent look at
+      // whether it really is. The builder ticking its own box is not proof.
+      id: 'plancheck', kind: 'gate', label: 'Plan fully done?', position: at(7), budget: { maxRetries: 3, maxUsd: 0.3 },
       config: { check: 'agent', command: '', instructions: '', agentPrompt: AUTOPILOT_CHECK_PROMPT, agentModel: 'sonnet', agentTools: [] }
     }
   ],
@@ -451,7 +469,9 @@ const AUTOPILOT: Blueprint = {
     edge('verify', 'land', 'verdict', 'pass'),
     edge('verify', 'repair', 'verdict', 'fail'),
     edge('repair', 'verify', 'branch'),
-    edge('land', 'plancheck', 'branch'),
+    edge('land', 'progress', 'branch'),
+    edge('progress', 'plancheck', 'verdict', 'pass'),
+    edge('progress', 'build', 'verdict', 'fail'),
     edge('plancheck', 'build', 'verdict', 'fail')
   ]
 }

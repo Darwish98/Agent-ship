@@ -42,7 +42,13 @@ function summary(n: BlueprintNode): string {
     case 'join':
       return `wait for ${n.config.strategy}`
     case 'gate':
-      return n.config.check === 'human' ? 'human approval' : n.config.command || 'no command yet'
+      return n.config.check === 'human'
+        ? 'human approval'
+        : n.config.check === 'agent'
+          ? 'an agent judges'
+          : n.config.check === 'plan'
+            ? 'plan items all ticked'
+            : n.config.command || 'no command yet'
     case 'merge':
       return `into ${n.config.baseBranch}${n.config.resolveConflicts ? ' · agent on conflict' : ''}`
     case 'land':

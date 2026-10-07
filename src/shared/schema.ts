@@ -12,7 +12,7 @@ export const budgetSchema = z.object({
    *  after each call, so a run stops within one call of the cap. */
   maxUsd: z.number().positive().optional(),
   maxMinutes: z.number().positive().optional(),
-  maxRetries: z.number().int().min(0).max(20).optional()
+  maxRetries: z.number().int().min(0).max(100).optional()
 })
 
 const modelSchema = z.enum(['default', 'opus', 'sonnet', 'haiku', 'fable'])
@@ -48,13 +48,16 @@ const joinConfig = z.object({
 })
 
 const gateConfig = z.object({
-  check: z.enum(['command', 'human', 'agent']).default('command'),
+  check: z.enum(['command', 'human', 'agent', 'plan']).default('command'),
   /** Shell command; exit 0 = pass. Used when check = command. */
   command: z.string().max(2_000).default(''),
   /** A recognised test runner that ran ZERO tests fails the gate, even at exit 0
    *  (`--passWithNoTests`, "No test files found"). A gate that verifies nothing
    *  is not a gate. Unset means off: a project may deliberately have no tests. */
   requireTests: z.boolean().optional(),
+  /** Used when check = plan: the plan file whose `- [ ]` / `- [x]` items are counted (a
+   *  repo-relative path, may be `{{plan}}`). Passes when none is left unticked. No agent, no cost. */
+  planFile: z.string().max(500).optional(),
   /** What the reviewer should look at. Used when check = human. */
   instructions: z.string().max(2_000).default(''),
   /** What to judge, and how to answer. Used when check = agent: an agent

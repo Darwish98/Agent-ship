@@ -132,15 +132,18 @@ const startOfDay = (t: number): number => {
 
 /** Did a gate in this run prove the work? Only a passed gate counts; a run
  *  with no gate at all is honestly "unverified". */
+/** A gate that checks the work (a command, a person). A gate that only decides whether to go round again (an agent asked "is the plan done?", the plan's tick-boxes) says nothing about whether the work is right, and its "failure" is progress, not a problem. */
+const isTestGate = (n: RunView['blueprint']['nodes'][number]): boolean => n.kind === 'gate' && (n.config.check === 'command' || n.config.check === 'human')
+
 export function verificationOf(run: RunView): Verification {
-  const gates = run.blueprint.nodes.filter((n) => n.kind === 'gate')
+  const gates = run.blueprint.nodes.filter(isTestGate)
   const failed = gates.find((g) => run.nodes[g.id]?.state === 'failed')
   if (run.status !== 'passed' && failed) return { state: 'failed', by: failed.label || 'gate' }
   // A run that stopped because a step failed (the builder could not commit, it
   // ran out of money) did not produce verified work either, and its branch must
   // not read as merely "unverified", which looks like nobody has looked yet.
   if (run.status === 'failed' || run.status === 'budget') {
-    const broke = run.blueprint.nodes.find((n) => n.kind !== 'trigger' && run.nodes[n.id]?.state === 'failed')
+    const broke = run.blueprint.nodes.find((n) => n.kind !== 'trigger' && (n.kind !== 'gate' || isTestGate(n)) && run.nodes[n.id]?.state === 'failed')
     if (broke) return { state: 'failed', by: broke.label || broke.kind }
   }
   if (!gates.length) return { state: 'unverified' }
@@ -177,7 +180,7 @@ export function pipelineForRun(run: RunView): PipelineStage[] {
   }
   for (const n of run.blueprint.nodes) {
     // In a landing run the only agent is the one repairing a failing merge, which is part of testing.
-    const id: StageId | null = n.kind === 'agent' ? (run.flowSlug === LAND_FLOW ? 'test' : 'build') : n.kind === 'gate' ? 'test' : n.kind === 'merge' ? 'merge' : n.kind === 'land' ? 'land' : null
+    const id: StageId | null = n.kind === 'agent' ? (run.flowSlug === LAND_FLOW ? 'test' : 'build') : isTestGate(n) ? 'test' : n.kind === 'merge' ? 'merge' : n.kind === 'land' ? 'land' : null
     if (!id) continue
     groups[id].states.push(run.nodes[n.id]?.state ?? 'idle')
     groups[id].names.push(n.label || n.kind)

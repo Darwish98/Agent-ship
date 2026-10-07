@@ -129,6 +129,22 @@ L. ~~**Stop repairing what repair cannot fix.**~~ Done: a repair (the builder re
    that changes something, or a gate passing, resets the count. (Land's own old
    "three tests, two idle repairs" behaviour is now two tests.)
 
+N. ~~**A cheaper, saner loop (2026-10-07, from a 60-step run that never finished).**~~ Done.
+   The first full Autopilot run worked mechanically but was slow and expensive: an agent
+   call asked "is the plan done?" after every item; one resumed builder session grew with
+   every item (each step cost more than the last, $0.09 -> $0.58); the tests ran twice on
+   the identical tree each pass; the Test stage showed red whenever the plan wasn't done;
+   and it stopped at pass 9 with the plan unfinished. Now: (1) **progress is counted from
+   the plan's `- [ ]` / `- [x]` boxes** by a new `plan` gate kind (free, instant), with the
+   agent asked once, at the end, as an independent audit; the builder ticks its own item;
+   plans with no boxes fall back to asking the agent each pass. (2) **A fresh builder
+   session per item**: only a failed test resumes (a repair); "go round again" starts clean
+   and is told what is left. (3) **An identical tree is not re-tested** (same command, same
+   tree, already passed this run: skipped, and the gate says so). (4) Loop-control gates no
+   longer count as tests on the Floor. (5) The pass cap is 25 items (schema allows 100) and
+   stopping at it says what is left. The plan template now writes items as tick-boxes.
+   Older plans without boxes keep working through the fallback.
+
 M. **Check it on the real project.** Re-run Autopilot on the Three.js example
    (its `main` already holds merges made while the gate verified nothing) and
    record what it costs and where it still goes wrong. Package managers other than

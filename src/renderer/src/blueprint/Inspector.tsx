@@ -234,11 +234,17 @@ function NodeFields({ node, onNode }: { node: BlueprintNode; onNode: Props['onNo
               <option value="command">a command exits 0</option>
               <option value="human">a person approves</option>
               <option value="agent">an agent judges</option>
+              <option value="plan">every plan item is ticked</option>
             </select>
           </Field>
           {c.check === 'command' && (
             <Field label="Command" hint="Run in the upstream branch's worktree.">
               <input value={c.command} placeholder="npm test" onChange={(e) => set({ command: e.target.value }, 'cmd')} />
+            </Field>
+          )}
+          {c.check === 'plan' && (
+            <Field label="Plan file" hint="Counts the `- [ ]` and `- [x]` items. Passes when none is left unticked; with no tick-boxes at all it passes and leaves the judging to the next check. No agent call, no cost.">
+              <input value={c.planFile ?? ''} placeholder="{{plan}}" onChange={(e) => set({ planFile: e.target.value }, 'plan')} />
             </Field>
           )}
           {c.check === 'human' && (

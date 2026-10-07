@@ -261,7 +261,8 @@ describe('run planning helpers', () => {
     expect(flow).toEqual(
       expect.arrayContaining([
         'build->tests', 'tests->merge:pass', 'tests->build:fail', 'merge->verify',
-        'verify->land:pass', 'verify->repair:fail', 'repair->verify', 'land->plancheck', 'plancheck->build:fail'
+        'verify->land:pass', 'verify->repair:fail', 'repair->verify', 'land->progress', 'progress->plancheck:pass',
+        'progress->build:fail', 'plancheck->build:fail'
       ])
     )
     // Nothing reaches land without passing the merged-result gate.
@@ -284,8 +285,14 @@ describe('run planning helpers', () => {
     // What earlier versions saved: six nodes, version 1, a plain `npm test` gate.
     const v1 = fromPattern(PATTERNS[4])
     v1.version = 1
-    v1.nodes = v1.nodes.filter((n) => !['verify', 'repair'].includes(n.id))
+    v1.nodes = v1.nodes.filter((n) => !['verify', 'repair', 'progress'].includes(n.id))
     expect(isStaleShippedAutopilot(v1)).toBe(true)
+
+    // What the previous version saved: the merged-result test and repair, but a plan-check agent after every item.
+    const v2 = fromPattern(PATTERNS[4])
+    v2.version = 2
+    v2.nodes = v2.nodes.filter((n) => n.id !== 'progress')
+    expect(isStaleShippedAutopilot(v2)).toBe(true)
 
     // The person changed the test command: theirs, left alone.
     const edited = JSON.parse(JSON.stringify(v1)) as Blueprint

@@ -121,6 +121,25 @@ describe('outcomes', () => {
     expect(f.byLane.ready[0].verification).toEqual({ state: 'failed', by: 'Builder' })
   })
 
+  it('a gate that only decides whether to go round again is not a failing test', () => {
+    // Autopilot asks "items left in the plan?" and "is it done?" after each item. Their
+    // "fail" means "more to do", and must not light the Test stage red or mark the work failed.
+    const id = '00000000-0000-0000-0000-00000000aaaa'
+    const bp = fromPattern(PATTERNS[4])
+    const ev: RunEvent[] = [
+      { type: 'run.started', at: NOW - HOUR, runId: id, projectId: 'p1', projectName: 'repo', projectPath: '/r', flowSlug: 'autopilot', blueprint: bp, inputs: {}, ceilingUsd: 5 },
+      { type: 'node.started', at: NOW - HOUR + 1, runId: id, nodeId: 'build', attempt: 1, cwd: '/w', branch: 'agentship/aaaa-build', sessionId: 's1' },
+      { type: 'node.finished', at: NOW - HOUR + 2, runId: id, nodeId: 'build', attempt: 1, status: 'passed', costUsd: 0.1, tokens: 1, summary: 'built', branch: 'agentship/aaaa-build' },
+      { type: 'gate.result', at: NOW - HOUR + 3, runId: id, nodeId: 'tests', attempt: 1, pass: true, by: 'command', detail: 'exit 0' },
+      { type: 'gate.result', at: NOW - HOUR + 4, runId: id, nodeId: 'progress', attempt: 1, pass: false, by: 'command', detail: '1 of 5 items are ticked.' },
+      { type: 'gate.result', at: NOW - HOUR + 5, runId: id, nodeId: 'plancheck', attempt: 1, pass: false, by: 'agent', detail: 'not done' }
+    ]
+    const run = foldRun(ev)!
+    expect(pipelineForRun(run).find((s) => s.id === 'test')!.state).toBe('passed')
+    const failed = foldRun([...ev, { type: 'run.finished', at: NOW, runId: id, status: 'failed', reason: 'out of passes', branch: 'agentship/aaaa-build' }])!
+    expect(verificationOf(failed).state).not.toBe('failed') // no failing TEST: it just ran out of passes
+  })
+
   it('ranks verified branches above unverified ones', () => {
     const proven = makeRun({ end: 'passed', gatePass: true, branch: 'agentship/ccc-build' })
     const f = derive({
