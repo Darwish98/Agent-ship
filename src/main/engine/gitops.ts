@@ -106,6 +106,10 @@ export async function createDetachedWorktree(repo: string, root: string, name: s
   // A resumed run reuses these deterministic scratch names; a killed app may have
   // left the old directory behind. It only ever held a throwaway copy, so clear it.
   if (fs.existsSync(dir)) {
+    // It may link a node_modules (the dependency stage does). `git worktree remove`
+    // and a recursive delete both follow such a link on Windows and delete the
+    // TARGET's files, so unlink it first, always.
+    unlinkDependencies(path.join(dir, 'node_modules'))
     await git(repo, ['worktree', 'remove', '--force', dir]).catch(() => undefined)
     fs.rmSync(dir, { recursive: true, force: true })
   }

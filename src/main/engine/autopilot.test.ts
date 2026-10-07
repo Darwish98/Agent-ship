@@ -216,6 +216,25 @@ describe('dependencies a branch adds', () => {
     expect(git('ls-tree', '-r', '--name-only', 'main')).not.toContain('node_modules')
   })
 
+  it('survives the loop going round again: the second pass recreates the merge copy without touching the installed packages', async () => {
+    // Reported: EPERM on "<run>-merge" at the start of the second pass.
+    const calls: string[] = []
+    let checks = 0
+    const fake = new Fake((req) => {
+      if (isPlanCheck(req)) return ok({ structured: { done: ++checks >= 2, reason: 'not yet' } })
+      if (isBuilder(req)) {
+        fs.writeFileSync(path.join(req.cwd, 'package.json'), JSON.stringify({ name: 'x', dependencies: { fakepkg: '1' } }))
+        fs.writeFileSync(path.join(req.cwd, `item-${req.cwd.length}-${fake.reqs.length}.txt`), 'x')
+      }
+      return ok({ sessionId: req.sessionId })
+    })
+    const { events, v } = await run(fake, autopilot(usesDep), installer(calls))
+    expect(v.status).toBe('passed')
+    expect(order(events).filter((n) => n === 'merge')).toHaveLength(2)
+    expect(order(events).filter((n) => n === 'land')).toHaveLength(2)
+    expect(calls).toHaveLength(1) // installed once, still intact for the second pass
+  })
+
   it('an import the manifest never declared is named as the cause, and the builder is told to declare it', async () => {
     // The reported failure, exactly: code imports `three`, package.json does not list it.
     const fake = new Fake((req) => {
