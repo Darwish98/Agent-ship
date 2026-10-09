@@ -66,7 +66,8 @@ export async function gitState(cwd: string): Promise<GitState> {
     ahead = Number.parseInt(count, 10) || 0
   }
 
-  const status = await git(cwd, ['status', '--porcelain']).catch(() => '')
+  // `.agentship/` is where Agent Ship keeps this project's flows; it is not work in progress.
+  const status = await git(cwd, ['status', '--porcelain', '--', '.', ':(exclude).agentship']).catch(() => '')
   const dirtyFiles = status ? status.split('\n').filter(Boolean).length : 0
 
   return {

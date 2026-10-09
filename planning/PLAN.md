@@ -145,6 +145,52 @@ N. ~~**A cheaper, saner loop (2026-10-07, from a 60-step run that never finished
    stopping at it says what is left. The plan template now writes items as tick-boxes.
    Older plans without boxes keep working through the fallback.
 
+O. ~~**Evaluate Autopilot on real projects (2026-10-07).**~~ Done, with fixes. Opt-in
+   `AGENT_SHIP_LIVE=1 npx vitest run src/main/engine/autopilot.live.test.ts` runs the real
+   flow with the real CLI on two scratch projects (a tick-box plan with no dependencies;
+   an older numbered plan with a real typescript + vitest install) and prints a timeline.
+   Run 1: 3 items in 84s for $0.20, no wasted step. Run 2 **failed**: the builder would not
+   tick item 3 ("I couldn't run npm test", it had no Bash), so the loop went round 4 more
+   times changing nothing (the tree-skip showed it: "same tree" every time) and ran out of
+   passes: 224s, $0.43, plan unfinished. Fixed: (1) the builder may run `npm test`; (2) it is
+   told to tick an item when it is *built and tested*, not "verified"; (3) it converts a plan
+   without boxes on its first pass; (4) **a builder pass that changes nothing twice in a row
+   ends the run** with what it said, and landing something new resets the count. Re-run of
+   the same scenario: passed, 3 items, 112s, $0.215. Real npm installs, the dependency
+   cache, fresh sessions, the tree-skip and the plan gate all behaved as designed.
+   Still not exercised live: a failing test being repaired by the builder, a merge conflict,
+   a plan of 10+ items, and the cost of a long run.
+
+P. ~~**Autopilot works outside this repo (2026-10-07), checked by driving the real app.**~~ Done.
+   The shipped flow no longer hard-codes `main` and `npm test`: the base branch and test
+   command are inputs, filled from the project (`runs:defaults`) and editable in the
+   confirmation; pnpm/yarn lockfiles pick their own installer; the "ran no tests" check
+   knows python unittest and go. The confirmation now lists the merge and the land (and
+   no longer says "Merges nothing" for a flow that lands), says a repair works in the merge
+   scratch copy, takes a **spending limit the person sets** (default $10, a hard stop that
+   a resumed run keeps) instead of leaving a $500+ worst case as the only number, and warns
+   when the test program is not installed. The rail no longer counts Agent Ship's own
+   `.agentship/` folder as changed work. Dead code removed (`planExists`, `SPIKES_DIR`).
+   Verified with `npm run e2e:autopilot` (`-- --plan python`, `-- --warning-only`): the real
+   Electron app, the real CLI, a Node project on `main` and a Python project on `master`,
+   from the Autopilot switch to the landed result.
+
+Q. ~~**Autopilot works in long sessions, not tiny steps (2026-10-08, from a new-project run).**~~ Done.
+   A new project failed in a loop: the builder was denied every `npm` command (it could not install or
+   look up a version, so it guessed ranges and pinned old versions blindly), and the engine's install
+   "finished without providing every package" because **NODE_ENV=production**, which a built Agent
+   Ship passes on, makes npm exit 0 having skipped every devDependency (reproduced). Fixed: the
+   engine no longer passes NODE_ENV on, installs with `--include=dev` (`--prod=false` / `--production=false`
+   for pnpm / yarn), and a short install names the packages that are missing. The builder now
+   has the project's own toolchain (`npm`/`npx`/`pnpm`/`yarn`/`node`/`python`/`pip`/`pytest`/`cargo`/`go`/`make`
+   and the test command), up to 60 minutes and $5 a session, and is told to work through a
+   stretch of the plan in one session, run and fix things itself, and look versions up instead of guessing.
+   The separate repair agent is gone (a failing merged result goes back to the builder), the node-visit
+   cap went 60 -> 300, and the pass cap is 12 sessions. Real app, new Vite + three + vitest project,
+   NODE_ENV=production: one builder session ($0.32, 104s) did all four items; the result builds and its
+   tests pass when run independently. **Trade-off to know:** the builder can now run `npm install`, `node`, etc.
+   in its own branch's directory without asking; containment is the worktree, as before, not the permission mode.
+
 M. **Check it on the real project.** Re-run Autopilot on the Three.js example
    (its `main` already holds merges made while the gate verified nothing) and
    record what it costs and where it still goes wrong. Package managers other than

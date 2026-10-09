@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parallelSection, renderTemplate, unrunnableReasons, usdCeiling } from '../../shared/blueprint'
 import { ranNoTests, repairFeedback } from '../../shared/gateParse'
+import { planProgress, type PlanProgress } from '../../shared/planProgress'
 import { RESOLVER_PROMPT } from '../../shared/patterns'
 import { foldRun, isResumable, promptVars, type NodeRun, type RunEvent, type RunView } from '../../shared/runs'
 import type { Blueprint, BlueprintNode } from '../../shared/schema'
@@ -35,6 +36,8 @@ export interface EngineDeps {
 }
 
 export interface StartArgs {
+  /** A hard stop the person chose, in dollars. The run's ceiling is this or the blueprint's own worst case, whichever is lower. */
+  limitUsd?: number
   projectId: string
   projectName: string
   projectPath: string
@@ -46,8 +49,10 @@ export interface StartArgs {
 type Finish = Extract<RunEvent, { type: 'run.finished' }>['status']
 
 /** Below this the CLI cannot even complete one call, so a further step is pointless. */
+/** The smallest spending limit a person may set. */
+const MIN_LIMIT_USD = 0.05
 const MIN_STEP_USD = 0.02
-const MAX_NODE_EXECUTIONS = 60
+const MAX_NODE_EXECUTIONS = 300
 const DEFAULT_AGENT_MINUTES = 30
 const DEFAULT_GATE_MINUTES = 10
 const OUTPUT_CAP = 4_000
@@ -66,6 +71,12 @@ const JUDGE_SCHEMA = JSON.stringify({
  * the same failure.
  */
 const IDLE_REPAIRS_LIMIT = 2
+/** Items one builder session works through before the step ends (see `continuePlan`). */
+const DEFAULT_ROUNDS = 8
+/** A session this large starts to rot (it forgets early instructions, costs more per call); a fresh one is cheaper and sharper. */
+const DEFAULT_ROTATE_TOKENS = 400_000
+/** Sessions in a row that complete no plan item before the run stops. */
+const PLAN_STALL_LIMIT = 2
 
 /** The steps that only read and judge (the tournament judge, the conflict resolver) do not need the most capable model. */
 const JUDGING_MODEL = 'sonnet'
@@ -95,6 +106,11 @@ interface Ctx {
   cost: number
   /** Repairs in a row that left the tree exactly as it was (see `IDLE_REPAIRS_LIMIT`). */
   idleRepairs?: number
+  /** Open items the plan gate saw last time, to notice a session that finished nothing. */
+  planOpen?: number
+  planStalls?: number
+  /** The agent a "go round again" gate just sent the walker back to: its next step is a fresh pass, not a first attempt. */
+  loopBack?: string
   /** Set inside a parallel copy (1-based). */
   copy?: { index: number; total: number }
   /** What this copy's nodes returned, shadowing the run-wide results in prompts. */
@@ -160,7 +176,10 @@ export class RunEngine {
       }
     }
 
-    const ceilingUsd = usdCeiling(a.blueprint) ?? 0
+    if (a.limitUsd !== undefined && !(Number.isFinite(a.limitUsd) && a.limitUsd >= MIN_LIMIT_USD)) {
+      return { ok: false, error: `The spending limit must be at least $${MIN_LIMIT_USD.toFixed(2)}.` }
+    }
+    const ceilingUsd = Math.min(usdCeiling(a.blueprint) ?? 0, a.limitUsd ?? Infinity)
     const runId = crypto.randomUUID()
     const abort = new AbortController()
     const live: Live = { abort, done: Promise.resolve() }
@@ -280,7 +299,9 @@ export class RunEngine {
       this.deps.emit(e)
     }
     const view = (): NonNullable<ReturnType<typeof foldRun>> => foldRun(events)!
-    const ceilingUsd = usdCeiling(bp) ?? 0
+    // What the run recorded when it started (a limit the person set, or the blueprint's worst case),
+    // so a resumed run keeps the limit it was given.
+    const ceilingUsd = view().ceilingUsd
 
     const short = runId.slice(0, 8)
     /** Attempts are counted per node across every parallel copy, so (node, attempt) names one step. */
@@ -391,33 +412,92 @@ export class RunEngine {
       const capUsd = Math.min(node.budget?.maxUsd ?? bp.defaultBudget.maxUsd ?? remaining, remaining)
       emit({ type: 'node.started', at: this.now(), runId, nodeId: node.id, attempt, cwd: stepCwd, branch: stepBranch, sessionId, ...copyFields(c) })
 
-      reserved += capUsd
-      let res: StepResult
-      try {
-        res = await this.deps.adapter.run({
-          prompt,
-          cwd: stepCwd,
-          sessionId,
-          resume,
-          model: node.config.model,
-          access: node.config.access,
-          tools: node.config.tools,
-          maxUsd: capUsd,
-          jsonSchema: node.config.outputSchema,
-          env: {
-            AGENT_SHIP_NAME: node.label || node.config.role,
-            AGENT_SHIP_ROLE: node.config.role,
-            AGENT_SHIP_TASK: `${bp.name}: ${node.label || node.config.role}${c.copy ? ` (copy ${c.copy.index}/${c.copy.total})` : ''}`
-          },
-          timeoutMs: (node.budget?.maxMinutes ?? DEFAULT_AGENT_MINUTES) * 60_000,
-          signal: c.signal
-        })
-      } finally {
-        reserved -= capUsd
+      const callAgent = async (callPrompt: string, callResume: boolean, cap: number): Promise<StepResult> => {
+        reserved += cap
+        try {
+          return await this.deps.adapter.run({
+            prompt: callPrompt,
+            cwd: stepCwd,
+            sessionId,
+            resume: callResume,
+            model: node.config.model,
+            access: node.config.access,
+            tools: node.config.tools.map((t) => renderTemplate(t, vars)),
+            maxUsd: cap,
+            jsonSchema: node.config.outputSchema,
+            env: {
+              AGENT_SHIP_NAME: node.label || node.config.role,
+              AGENT_SHIP_ROLE: node.config.role,
+              AGENT_SHIP_TASK: `${bp.name}: ${node.label || node.config.role}${c.copy ? ` (copy ${c.copy.index}/${c.copy.total})` : ''}`
+            },
+            timeoutMs: (node.budget?.maxMinutes ?? DEFAULT_AGENT_MINUTES) * 60_000,
+            signal: c.signal
+          })
+        } finally {
+          reserved -= cap
+        }
+      }
+      const planFile = node.config.continuePlan ? renderTemplate(node.config.continuePlan, vars).trim() : ''
+      const readPlan = (): PlanProgress | null => {
+        if (!planFile) return null
+        const file = path.resolve(stepCwd, planFile)
+        const root = path.resolve(stepCwd)
+        if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) return null
+        try {
+          return planProgress(fs.readFileSync(file, 'utf8'))
+        } catch {
+          return null
+        }
       }
 
+      const startDone = node.config.worktree ? readPlan()?.done : undefined
+      let res = await callAgent(prompt, resume, capUsd)
+      let stepCost = res.costUsd
+      let stepTokens = res.tokens
+      const denied = new Set<string>(res.denials ?? [])
       spent += res.costUsd
       c.cost += res.costUsd
+
+      // The agent finished one item and stopped, as models do. Instead of ending the step (and starting a
+      // fresh session that re-reads everything), ask the SAME session for the next one, for as long as it is
+      // completing items and its context is healthy. The engine decides when to stop, not the model.
+      let rounds = 1
+      if (startDone !== undefined && res.ok) {
+        const maxRounds = node.config.maxRounds ?? DEFAULT_ROUNDS
+        const rotateAt = node.config.rotateTokens ?? DEFAULT_ROTATE_TOKENS
+        const stepCap = node.budget?.maxUsd ?? bp.defaultBudget.maxUsd ?? remaining
+        let ticked = startDone
+        for (;;) {
+          const after = readPlan()
+          if (!after || after.done <= ticked) break // that round completed nothing: stop, the next pass starts clean
+          ticked = after.done
+          if (after.open.length === 0 || rounds >= maxRounds || stepTokens > rotateAt || c.signal.aborted) break
+          const room = Math.min(stepCap - stepCost, remainingUsd())
+          if (room < MIN_STEP_USD) break
+          const refused = [...denied].slice(-3)
+          const more = await callAgent(
+            `Good. Continue with the next item that is not ticked yet: ${after.open[0]}\n\nSame rules as before: build it properly, run the build and the tests yourself, fix what fails, tick it in the plan, and reply in two sentences.${
+              refused.length ? `\n\nThese commands were refused earlier: ${refused.join('; ')}. Run commands plainly from the project root, with no \`cd\`, pipes, \`&&\` or redirects.` : ''
+            }`,
+            true,
+            room
+          )
+          rounds++
+          stepCost += more.costUsd
+          stepTokens += more.tokens
+          spent += more.costUsd
+          c.cost += more.costUsd
+          for (const d of more.denials ?? []) denied.add(d)
+          res = more
+          if (!more.ok) break
+        }
+      }
+      res = { ...res, costUsd: stepCost, tokens: stepTokens }
+      if (denied.size) res = { ...res, result: `${res.result}\n\nCommands the CLI refused: ${[...denied].slice(0, 5).join('; ')}` }
+      if (rounds > 1) {
+        const completed = (readPlan()?.done ?? startDone ?? 0) - (startDone ?? 0)
+        res = { ...res, result: `${res.result}\n\n(One session, ${rounds} rounds, ${completed} plan item${completed === 1 ? '' : 's'} completed.)` }
+      }
       // A killed or failed step may have left no resumable session behind.
       if (res.ok) c.sessions.set(node.id, { id: res.sessionId, cwd: stepCwd })
 
@@ -490,12 +570,17 @@ export class RunEngine {
       if (tokenBust) return { stop: { status: 'budget', reason: `"${label}" exceeded its token limit.` } }
       if (!res.ok) return { stop: { status: 'failed', reason: `"${label}" failed: ${res.error ?? 'unknown error'}` } }
 
-      // Only a repair counts: the first attempt at a step may legitimately change nothing.
-      const repairing = resume || Boolean(integ && !node.config.worktree && stepCwd === integ.wt.path)
+      // A step that edits the tree and leaves it exactly as it was. Once is fine (the
+      // brief tells a repair to change nothing for an environmental failure). Twice in a
+      // row, whether it was a repair or a fresh pass round a loop, means nothing is
+      // happening and the next pass would only spend money repeating it.
+      const freshPass = c.loopBack === node.id
+      if (c.loopBack === node.id) c.loopBack = undefined
+      const repairing = resume || freshPass || Boolean(integ && !node.config.worktree && stepCwd === integ.wt.path)
       if (repairing && changed === false) {
         c.idleRepairs = (c.idleRepairs ?? 0) + 1
         if (c.idleRepairs >= IDLE_REPAIRS_LIMIT) {
-          return { stop: { status: 'failed', reason: `"${label}" changed nothing ${c.idleRepairs} times in a row, so the failure is not one it can repair. What it said: ${clip(summary, 600)}` } }
+          return { stop: { status: 'failed', reason: `"${label}" changed nothing ${c.idleRepairs} times in a row, so this is not making progress. What it said: ${clip(summary, 600)}` } }
         }
       } else if (changed) {
         c.idleRepairs = 0
@@ -586,16 +671,21 @@ export class RunEngine {
           stop = { status: 'failed', reason: `The plan "${rel}" was not found.` }
           detail = 'No plan file.'
         } else {
-          const items = [...fs.readFileSync(file, 'utf8').matchAll(/^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s*(.*)$/gm)]
-          const open = items.filter((m) => m[1] === ' ')
-          if (items.length === 0) {
+          const p = planProgress(fs.readFileSync(file, 'utf8'))
+          if (p.total === 0) {
             pass = true
             detail = `${rel} has no tick-box items (- [ ]), so progress is left to the next check.`
-          } else if (open.length === 0) {
+          } else if (p.open.length === 0) {
             pass = true
-            detail = `All ${items.length} items in ${rel} are ticked.`
+            detail = `All ${p.total} items in ${rel} are ticked.`
           } else {
-            detail = `${items.length - open.length} of ${items.length} items in ${rel} are ticked. Next: ${clip(open[0][2].trim(), 200)}`
+            detail = `${p.done} of ${p.total} items in ${rel} are ticked. Next: ${clip(p.open[0], 200)}`
+            // A whole session that completed no item, twice running, is not going anywhere.
+            c.planStalls = c.planOpen !== undefined && p.open.length >= c.planOpen ? (c.planStalls ?? 0) + 1 : 0
+            c.planOpen = p.open.length
+            if (c.planStalls >= PLAN_STALL_LIMIT) {
+              stop = { status: 'failed', reason: `No plan item was completed in the last ${c.planStalls} sessions, so the run stopped. ${detail}` }
+            }
           }
         }
       } else {
@@ -605,11 +695,12 @@ export class RunEngine {
         if (!env.ok) {
           detail = `exit 1\n${env.reason}`
         } else {
+          const command = renderTemplate(node.config.command, promptVars(view(), c.upstream, { branch: c.branch ?? '' })).trim()
           const treeId = await git.workingTreeId(c.cwd).catch(() => '')
-          const seen = treeId ? passedTrees.get(`${node.config.command}\0${treeId}`) : undefined
+          const seen = treeId ? passedTrees.get(`${command}\0${treeId}`) : undefined
           const out = seen
             ? { code: 0, timedOut: false, tail: `Skipped: this exact tree already passed this command at "${seen}".` }
-            : await runCommand(node.config.command, c.cwd, (node.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000, c.signal)
+            : await runCommand(command, c.cwd, (node.budget?.maxMinutes ?? DEFAULT_GATE_MINUTES) * 60_000, c.signal)
           pass = out.code === 0
           detail = out.timedOut ? `Timed out.\n${out.tail}` : `exit ${out.code}\n${out.tail}`
           if (pass && node.config.requireTests && !seen && ranNoTests(out.tail)) {
@@ -622,7 +713,7 @@ export class RunEngine {
               out.tail
             ].join('\n')
           }
-          if (pass && treeId && !seen) passedTrees.set(`${node.config.command}\0${treeId}`, node.label || 'a gate')
+          if (pass && treeId && !seen) passedTrees.set(`${command}\0${treeId}`, node.label || 'a gate')
         }
       }
 
@@ -635,10 +726,7 @@ ${hint}`
       if (stop) return { stop }
       if (c.signal.aborted) return { stop: stopOf(c) }
 
-      if (pass) {
-        c.idleRepairs = 0
-        return { next: outEdge(node, 'pass') }
-      }
+      if (pass) return { next: outEdge(node, 'pass') }
 
       const failCount = (c.fails.get(node.id) ?? 0) + 1
       c.fails.set(node.id, failCount)
@@ -658,7 +746,10 @@ ${hint}`
       // the NEXT piece of work, not a repair of the last one: start the builder fresh
       // instead of resuming one ever-growing conversation, and tell it what is left.
       if (node.config.check === 'agent' || node.config.check === 'plan') {
-        if (repair.kind === 'agent') c.sessions.delete(repair.id)
+        if (repair.kind === 'agent') {
+          c.sessions.delete(repair.id)
+          c.loopBack = repair.id
+        }
         c.feedback = detail
         return { next: repair }
       }
@@ -1056,6 +1147,8 @@ ${hint}` : repairFeedback(detail)
             return failed(moved)
           }
           emit({ type: 'node.finished', at: this.now(), runId, nodeId: node.id, attempt, status: 'passed', costUsd: 0, tokens: 0, summary: `${label}: ${base} is now at ${integ.sha.slice(0, 7)}.` })
+          // The base really moved: that is progress, whatever came before.
+          if (integ.sha !== integ.baseTip) main.idleRepairs = 0
           node = outEdge(node, 'next')
           continue
         }

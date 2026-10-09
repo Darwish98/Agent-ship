@@ -32,6 +32,8 @@ export interface StepResult {
   tokens: number
   sessionId: string
   error?: string
+  /** Commands or tools the CLI refused (nothing can approve a prompt), so a person can see why an agent could not do something. */
+  denials?: string[]
   budgetExhausted: boolean
   timedOut: boolean
   cancelled: boolean
@@ -147,6 +149,7 @@ interface CliJson {
   subtype?: string
   terminal_reason?: string
   errors?: string[]
+  permission_denials?: { tool_name?: string; tool_input?: { command?: string; file_path?: string } }[]
   usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number }
 }
 
@@ -225,6 +228,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           costUsd: json.total_cost_usd ?? 0,
           tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
           sessionId: json.session_id ?? req.sessionId,
+          denials: (json.permission_denials ?? []).map((d) => `${d.tool_name ?? 'tool'}: ${String(d.tool_input?.command ?? d.tool_input?.file_path ?? '').slice(0, 140)}`),
           budgetExhausted,
           error:
             code === 0 && !json.is_error

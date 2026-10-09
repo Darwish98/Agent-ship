@@ -1,0 +1,282 @@
+{
+  "schemaVersion": 1,
+  "name": "Autopilot",
+  "description": "Works through a plan in long sessions: one builder session, with your project’s own toolchain, goes item after item (the engine keeps asking it for the next, and starts a fresh context when it grows). Then the tests run, it is merged and landed, and the loop repeats until every item is ticked, when an agent checks the plan really is done. Your spending limit and a stall stop are the safety nets.",
+  "version": 7,
+  "defaultBudget": {
+    "maxUsd": 1
+  },
+  "inputs": [
+    {
+      "name": "plan",
+      "label": "Plan file (a path in the repo, e.g. planning/PLAN.md)",
+      "required": true
+    },
+    {
+      "name": "base",
+      "label": "Branch to land on (filled in from the repo)",
+      "required": true
+    },
+    {
+      "name": "test",
+      "label": "Test command (detected from the repo; edit it if wrong)",
+      "required": true
+    }
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "label": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "kind": "trigger",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "build",
+      "label": "Builder",
+      "position": {
+        "x": 290,
+        "y": 0
+      },
+      "budget": {
+        "maxTokens": 6000000,
+        "maxUsd": 5,
+        "maxMinutes": 45
+      },
+      "kind": "agent",
+      "config": {
+        "continuePlan": "{{plan}}",
+        "maxRounds": 8,
+        "rotateTokens": 400000,
+        "role": "Builder",
+        "model": "default",
+        "prompt": "You are building the project described by the plan at {{plan}}. First look at the repository\n(existing files, recent commits) to see what is already done.\n\nWork on the FIRST item that is not ticked yet, and do it properly: build it, run the build and the\ntests yourself (`{{test}}`), fix what fails, and leave the project working. Then tick the item in the\nplan (change its `- [ ]` to `- [x]`, nothing else) and reply in two sentences. You will be asked to\ncontinue with the next item straight away, so do not start on it yourself.\n\nCommands: you can run the whole toolchain of the project (install, build, test, scripts). Run each\ncommand plainly from the project root: commands with `cd`, pipes, `&&` or redirects are refused, and\nnothing can approve a refused command. If you are unsure a package or version exists, look it up\n(for npm: `npm view <package> versions`) instead of guessing. Do not run `git commit` or `git push`:\nyour work is committed for you.\n\nHow your work is checked afterwards: the engine runs `{{test}}` on your branch, and that check FAILS if no\ntests run at all. So the project needs a working test setup (for a Node project, a `test` script in\npackage.json) and at least one real test for what you built. Declare every package you import in\npackage.json; the engine installs from it. Never edit the test script or its flags to make a check pass.\n\nIf the plan has no tick-boxes yet, first rewrite EVERY item as `- [ ] N. ...` (keeping its text exactly),\nticking the ones already done.\nIf every item is already ticked but a check below says something is missing, build what it reports, and\nun-tick (or add) the matching item so the plan tells the truth.",
+        "worktree": true,
+        "access": "edit",
+        "tools": [
+          "Bash(npm *)",
+          "Bash(npx *)",
+          "Bash(pnpm *)",
+          "Bash(yarn *)",
+          "Bash(node *)",
+          "Bash(python *)",
+          "Bash(python3 *)",
+          "Bash(pip *)",
+          "Bash(pip3 *)",
+          "Bash(pytest*)",
+          "Bash(cargo *)",
+          "Bash(go *)",
+          "Bash(make*)",
+          "Bash({{test}})",
+          "Bash(cd *)",
+          "Bash(ls*)",
+          "Bash(pwd)",
+          "Bash(cat *)",
+          "Bash(mkdir *)",
+          "Bash(git status*)",
+          "Bash(git diff*)",
+          "Bash(git log*)"
+        ],
+        "outputSchema": ""
+      }
+    },
+    {
+      "id": "tests",
+      "label": "Tests pass",
+      "position": {
+        "x": 580,
+        "y": 0
+      },
+      "budget": {
+        "maxRetries": 3
+      },
+      "kind": "gate",
+      "config": {
+        "check": "command",
+        "command": "{{test}}",
+        "requireTests": true,
+        "instructions": "",
+        "agentPrompt": "",
+        "agentModel": "default",
+        "agentTools": []
+      }
+    },
+    {
+      "id": "merge",
+      "label": "Merge into the base branch",
+      "position": {
+        "x": 870,
+        "y": 0
+      },
+      "budget": {
+        "maxUsd": 1
+      },
+      "kind": "merge",
+      "config": {
+        "baseBranch": "{{base}}",
+        "resolveConflicts": true,
+        "resolverPrompt": "A git merge of \"{{branch}}\" into \"{{baseBranch}}\" stopped with conflicts.\nYou are in a scratch copy of the repository with the merge in progress.\n\nConflicted files:\n{{conflicts}}\n\nResolve every conflict so the intent of BOTH sides survives. Never resolve by\nblindly taking one side, and never delete another change's work to make a\nconflict go away. Remove all conflict markers, then `git add` the resolved files.\nDo NOT commit, push, rebase, or switch branches; the caller finishes the merge.\nIf a file cannot be resolved safely, leave it conflicted and say why."
+      }
+    },
+    {
+      "id": "verify",
+      "label": "Test the merged result",
+      "position": {
+        "x": 1160,
+        "y": 0
+      },
+      "budget": {
+        "maxMinutes": 15,
+        "maxRetries": 2
+      },
+      "kind": "gate",
+      "config": {
+        "check": "command",
+        "command": "{{test}}",
+        "requireTests": true,
+        "instructions": "",
+        "agentPrompt": "",
+        "agentModel": "default",
+        "agentTools": []
+      }
+    },
+    {
+      "id": "land",
+      "label": "Land on the base branch",
+      "position": {
+        "x": 1450,
+        "y": 0
+      },
+      "kind": "land",
+      "config": {
+        "baseBranch": "{{base}}"
+      }
+    },
+    {
+      "id": "progress",
+      "label": "Items left in the plan?",
+      "position": {
+        "x": 1740,
+        "y": 0
+      },
+      "budget": {
+        "maxRetries": 40
+      },
+      "kind": "gate",
+      "config": {
+        "check": "plan",
+        "command": "",
+        "planFile": "{{plan}}",
+        "instructions": "",
+        "agentPrompt": "",
+        "agentModel": "default",
+        "agentTools": []
+      }
+    },
+    {
+      "id": "plancheck",
+      "label": "Plan fully done?",
+      "position": {
+        "x": 2030,
+        "y": 0
+      },
+      "budget": {
+        "maxUsd": 0.3,
+        "maxRetries": 3
+      },
+      "kind": "gate",
+      "config": {
+        "check": "agent",
+        "command": "",
+        "instructions": "",
+        "agentPrompt": "Read the plan at {{plan}} and compare it against the current state of the\nrepository (recent commits, existing files, what the builder just said:\n{{build.result}}).\n\nHas EVERY item in the plan now been fully implemented and landed (meeting\nits \"Done when\" line where it has one)? Do not\nguess - look. Reply with JSON: {\"done\": boolean, \"reason\": \"one or two\nsentences saying what, if anything, is still missing\"}.",
+        "agentModel": "sonnet",
+        "agentTools": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "start->build",
+      "from": "start",
+      "to": "build",
+      "type": "control",
+      "condition": "always"
+    },
+    {
+      "id": "build->tests",
+      "from": "build",
+      "to": "tests",
+      "type": "branch",
+      "condition": "always"
+    },
+    {
+      "id": "tests->merge",
+      "from": "tests",
+      "to": "merge",
+      "type": "verdict",
+      "condition": "pass"
+    },
+    {
+      "id": "tests->build:fail",
+      "from": "tests",
+      "to": "build",
+      "type": "verdict",
+      "condition": "fail"
+    },
+    {
+      "id": "merge->verify",
+      "from": "merge",
+      "to": "verify",
+      "type": "branch",
+      "condition": "always"
+    },
+    {
+      "id": "verify->land",
+      "from": "verify",
+      "to": "land",
+      "type": "verdict",
+      "condition": "pass"
+    },
+    {
+      "id": "verify->build:fail",
+      "from": "verify",
+      "to": "build",
+      "type": "verdict",
+      "condition": "fail"
+    },
+    {
+      "id": "land->progress",
+      "from": "land",
+      "to": "progress",
+      "type": "branch",
+      "condition": "always"
+    },
+    {
+      "id": "progress->plancheck",
+      "from": "progress",
+      "to": "plancheck",
+      "type": "verdict",
+      "condition": "pass"
+    },
+    {
+      "id": "progress->build:fail",
+      "from": "progress",
+      "to": "build",
+      "type": "verdict",
+      "condition": "fail"
+    },
+    {
+      "id": "plancheck->build:fail",
+      "from": "plancheck",
+      "to": "build",
+      "type": "verdict",
+      "condition": "fail"
+    }
+  ]
+}

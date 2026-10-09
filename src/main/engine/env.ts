@@ -13,6 +13,13 @@ const sep = process.platform === 'win32' ? ';' : ':'
 /** Variables npm sets for a script it runs, describing Agent Ship's own package. */
 const NPM_SCRIPT_VARS = /^(npm_lifecycle_|npm_package_|npm_command$|npm_execpath$|npm_node_execpath$|npm_config_local_prefix$|init_cwd$)/i
 
+/**
+ * NODE_ENV describes how Agent Ship itself was started (a built app is `production`). Passed
+ * on, `npm install` exits 0 having silently skipped every devDependency (typescript, vite,
+ * vitest...), and the project's own tests would run in the wrong mode. A project sets its own.
+ */
+const MODE_VARS = /^node_env$/i
+
 const isBinDir = (entry: string): boolean => /(^|[\\/])node_modules[\\/]\.bin[\\/]?$/i.test(entry)
 
 /**
@@ -22,7 +29,7 @@ const isBinDir = (entry: string): boolean => /(^|[\\/])node_modules[\\/]\.bin[\\
  */
 export function projectEnv(base: NodeJS.ProcessEnv, cwd: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
-  for (const [k, v] of Object.entries(base)) if (!NPM_SCRIPT_VARS.test(k)) env[k] = v
+  for (const [k, v] of Object.entries(base)) if (!NPM_SCRIPT_VARS.test(k) && !MODE_VARS.test(k)) env[k] = v
 
   // Windows keeps the variable's own spelling (Path); keep it rather than adding a second one.
   const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') ?? 'PATH'

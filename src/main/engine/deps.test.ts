@@ -214,3 +214,67 @@ describe('missingPackageHint', () => {
     expect(missingPackageHint('AssertionError: expected 1 to be 2', copy)).toBe('')
   })
 })
+
+describe('installCommand', () => {
+  it('uses the package manager whose lockfile the project has', async () => {
+    const { installCommand } = await import('./deps')
+    const d = path.join(root, 'pm')
+    fs.mkdirSync(d)
+    expect(installCommand(d)).toMatch(/^npm install --include=dev/)
+    fs.writeFileSync(path.join(d, 'package-lock.json'), '{}')
+    expect(installCommand(d)).toMatch(/^npm ci --include=dev/)
+    fs.writeFileSync(path.join(d, 'yarn.lock'), '')
+    expect(installCommand(d)).toBe('yarn install --frozen-lockfile --production=false')
+    fs.writeFileSync(path.join(d, 'pnpm-lock.yaml'), '')
+    expect(installCommand(d)).toBe('pnpm install --frozen-lockfile --prod=false')
+  })
+
+  it('a different lockfile is a different manifest, so switching package manager reinstalls', async () => {
+    const { syncDependencies: sd } = await import('./deps')
+    manifest(copy, { three: '1' })
+    const calls: string[] = []
+    await sd({ cwd: copy, project, cacheRoot: cache, signal, install: fakeInstall(calls) })
+    fs.unlinkSync(path.join(copy, 'node_modules'))
+    fs.writeFileSync(path.join(copy, 'pnpm-lock.yaml'), 'lockfileVersion: 9')
+    await sd({ cwd: copy, project, cacheRoot: cache, signal, install: fakeInstall(calls) })
+    expect(calls).toHaveLength(2)
+  })
+})
+
+describe('the real installer when Agent Ship runs as a built app (NODE_ENV=production)', () => {
+  it('still installs devDependencies, which is what typescript, vite and vitest are', async () => {
+    // Reported: "The install finished without providing every package". npm exits 0 and skips devDependencies under NODE_ENV=production.
+    const { npmInstall } = await import('./deps')
+    const local = path.join(root, 'dev-pkg')
+    fs.mkdirSync(local)
+    fs.writeFileSync(path.join(local, 'package.json'), '{"name":"dev-pkg","version":"1.0.0","main":"index.js"}')
+    fs.writeFileSync(path.join(local, 'index.js'), 'module.exports = 7')
+    fs.writeFileSync(path.join(copy, 'package.json'), JSON.stringify({ name: 'x', devDependencies: { 'dev-pkg': `file:${local.split(path.sep).join('/')}` } }))
+    const before = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      const r = await syncDependencies({ cwd: copy, project, cacheRoot: cache, signal, install: npmInstall })
+      expect(r).toEqual({ ok: true, action: 'installed' })
+      expect(fs.existsSync(path.join(copy, 'node_modules', 'dev-pkg', 'package.json'))).toBe(true)
+    } finally {
+      if (before === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = before
+    }
+  }, 120_000)
+
+  it('and names the packages that are missing when an install really falls short', async () => {
+    manifest(copy, { three: '1', 'cannon-es': '1' })
+    const partial: Installer = async (dir) => {
+      fs.mkdirSync(path.join(dir, 'node_modules', 'three'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'node_modules', 'three', 'package.json'), '{}')
+      return { ok: true }
+    }
+    const r = await syncDependencies({ cwd: copy, project, cacheRoot: cache, signal, install: partial })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.reason).toContain('cannon-es')
+      expect(r.reason).not.toContain('three,')
+      expect(r.reason).toMatch(/npm view/)
+    }
+  })
+})

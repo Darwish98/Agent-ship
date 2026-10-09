@@ -200,6 +200,12 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
     await world.refreshProjects()
   }
 
+  /** What the Autopilot dialog starts with: the plan, plus this project's own base branch and test command (editable). */
+  const autopilotInputs = async (projectId: string, plan: string): Promise<Record<string, string>> => {
+    const d = await window.agentShip.runDefaults(projectId)
+    return { plan, ...(d ? { base: d.base, test: d.test } : {}) }
+  }
+
   const removeProject = async (room: Room): Promise<void> => {
     const live = runs.some((r) => r.projectId === room.id && isActive(r.status))
     const note = live ? ' It has a run in progress; that run keeps going.' : ''
@@ -249,7 +255,7 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
       await window.agentShip.saveFlow(projectId, AUTOPILOT_SLUG, fromPattern(AUTOPILOT_PATTERN), null)
     }
     const { exists, file } = await window.agentShip.checkPlan(projectId)
-    if (exists) nav.requestRun(projectId, AUTOPILOT_SLUG, { plan: file ?? PLAN_FILE })
+    if (exists) nav.requestRun(projectId, AUTOPILOT_SLUG, await autopilotInputs(projectId, file ?? PLAN_FILE))
     else setPlanSetup({ projectId, projectName: room.name })
   }
 
@@ -508,7 +514,7 @@ export function Floor({ active }: { active: boolean }): JSX.Element {
           onReady={() => {
             const { projectId } = planSetup
             setPlanSetup(null)
-            nav.requestRun(projectId, AUTOPILOT_SLUG, { plan: PLAN_FILE })
+            void autopilotInputs(projectId, PLAN_FILE).then((inputs) => nav.requestRun(projectId, AUTOPILOT_SLUG, inputs))
           }}
         />
       )}

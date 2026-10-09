@@ -18,6 +18,7 @@ import { RunEngine, worktreeRootFor } from './engine/runner'
 import { RunStore } from './engine/store'
 import { deleteFlow, listFlows, loadFlow, peekFlow, saveFlow } from './flows'
 import { gitState, unmergedBranches } from './git'
+import { commandExists } from './engine/tools'
 import { hookCommand } from './hookcommand'
 import { installHooks } from './hooks'
 import { installCrashLogging, log, logPath } from './log'
@@ -209,27 +210,48 @@ function registerIpcHandlers(): void {
   // Runs. The renderer names a project and a flow; the engine reads the
   // blueprint from disk itself, so it only ever executes what is in the repo.
   ipcMain.handle('runs:list', () => runStore?.list() ?? [])
+  /** What `{{base}}` and `{{test}}` should be for a project: its own base branch and the test command found in it. */
+  const projectDefaults = async (projectPath: string): Promise<{ base: string; test: string; testSource: string }> => {
+    const git = await gitState(projectPath)
+    const test = detectTestCommand(projectPath)
+    return { base: git.baseBranch || 'main', test: test.command || 'npm test', testSource: test.source }
+  }
+  ipcMain.handle('runs:defaults', async (_evt, projectId: string) => {
+    const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === String(projectId))
+    return project ? projectDefaults(project.path) : null
+  })
   ipcMain.handle(
     'runs:start',
-    async (_evt, a: { projectId: string; slug: string; inputs: Record<string, string> }) => {
+    async (_evt, a: { projectId: string; slug: string; inputs: Record<string, string>; limitUsd?: number }) => {
       if (!engine) return { ok: false, error: 'The run engine is not ready.' }
       const project = shipyard.loadProjects(userDataDir()).find((p) => p.id === a.projectId)
       if (!project) return { ok: false, error: 'Unknown project.' }
       const flow = loadFlow(userDataDir(), a.projectId, a.slug)
       if (!flow.ok) return { ok: false, error: flow.error }
-      const inputs = Object.fromEntries(
+      const inputs: Record<string, string> = Object.fromEntries(
         Object.entries(a.inputs ?? {}).map(([k, v]) => [k, String(v).slice(0, 20_000)])
       )
+      // A flow that asks for the base branch or the test command gets them from the
+      // project when the caller left them blank, so every way of starting it works.
+      const declares = (name: string): boolean => flow.blueprint.inputs.some((i) => i.name === name)
+      if ((declares('base') && !inputs.base?.trim()) || (declares('test') && !inputs.test?.trim())) {
+        const d = await projectDefaults(project.path)
+        if (declares('base') && !inputs.base?.trim()) inputs.base = d.base
+        if (declares('test') && !inputs.test?.trim()) inputs.test = d.test
+      }
       return engine.start({
         projectId: project.id,
         projectName: project.name,
         projectPath: project.path,
         flowSlug: a.slug,
         blueprint: flow.blueprint,
-        inputs
+        inputs,
+        limitUsd: typeof a.limitUsd === 'number' ? a.limitUsd : undefined
       })
     }
   )
+  // Whether a command a flow is about to run exists on this machine (the first word of it).
+  ipcMain.handle('tools:exists', (_evt, command: string) => commandExists(String(command ?? '')))
   // Landing: what it would do, then do it. The plan is computed from the repo
   // itself; the run is a normal engine run of a pipeline built here in the main
   // process, so nothing the renderer sends can change what steps exist.

@@ -41,6 +41,11 @@ describe('projectEnv', () => {
     expect(env.Path).not.toContain(ship)
   })
 
+  it("does not pass on Agent Ship's own NODE_ENV: a built app is `production`, which makes npm skip every devDependency", () => {
+    const env = projectEnv({ PATH: 'x', NODE_ENV: 'production', Node_Env: 'production', HOME: '/h' }, '/p')
+    expect(Object.keys(env).sort()).toEqual(['HOME', 'PATH'])
+  })
+
   it('does not change the environment it was given', () => {
     const base = { PATH: [ship, 'x'].join(sep), npm_package_name: 'agent-ship' }
     projectEnv(base, '/p')

@@ -240,3 +240,14 @@ describe('ranNoTests', () => {
     expect(ranNoTests('')).toBe(false)
   })
 })
+
+describe('ranNoTests in other ecosystems', () => {
+  it('python unittest and go test with nothing to run', async () => {
+    const { ranNoTests } = await import('./gateParse')
+    const lines = (...l: string[]): string => l.join(String.fromCharCode(10))
+    expect(ranNoTests(lines('-'.repeat(60), 'Ran 0 tests in 0.000s', '', 'NO TESTS RAN'))).toBe(true)
+    expect(ranNoTests(lines('?   	example.com/app	[no test files]', '?   	example.com/app/util	[no test files]'))).toBe(true)
+    expect(ranNoTests(lines('?   	example.com/app	[no test files]', 'ok  	example.com/app/util	0.003s'))).toBe(false)
+    expect(ranNoTests(lines('Ran 4 tests in 0.002s', '', 'OK'))).toBe(false)
+  })
+})

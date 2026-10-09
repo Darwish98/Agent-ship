@@ -21,10 +21,6 @@ export function findPlan(projectPath: string): string | null {
   return null
 }
 
-export function planExists(projectPath: string): boolean {
-  return findPlan(projectPath) !== null
-}
-
 export function savePlan(projectPath: string, content: string): { ok: true } | { ok: false; error: string } {
   const text = String(content ?? '').trim()
   if (!text) return { ok: false, error: 'The plan is empty.' }

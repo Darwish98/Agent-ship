@@ -34,6 +34,20 @@ export function renderTemplate(template: string, vars: Record<string, string>): 
   )
 }
 
+/** The blueprint as it will actually run: gate commands and merge/land branches with the run's inputs filled in, so a confirmation dialog shows `npm test` and `main`, not `{{test}}` and `{{base}}`. */
+export function resolveForDisplay(bp: Blueprint, inputs: Record<string, string>): Blueprint {
+  const fill = (t: string): string => renderTemplate(t, inputs)
+  return {
+    ...bp,
+    nodes: bp.nodes.map((n) => {
+      if (n.kind === 'gate') return { ...n, config: { ...n.config, command: fill(n.config.command) } }
+      if (n.kind === 'merge') return { ...n, config: { ...n.config, baseBranch: fill(n.config.baseBranch) } }
+      if (n.kind === 'land') return { ...n, config: { ...n.config, baseBranch: fill(n.config.baseBranch) } }
+      return n
+    })
+  }
+}
+
 /** A gate's "fail" edge is the one legitimate way to loop (retry / repair). */
 function isRetryEdge(bp: Blueprint, edge: Blueprint['edges'][number]): boolean {
   const from = bp.nodes.find((n) => n.id === edge.from)
@@ -552,7 +566,8 @@ export interface RunSummary {
   parallel: { label: string; copies: number; steps: string[]; strategy: string; quorum: number; judge: boolean }[]
   merges: { label: string; base: string; agentOnConflict: boolean }[]
   lands: { label: string; base: string }[]
-  agents: { label: string; model: string; edits: boolean; ownBranch: boolean; tools: string[] }[]
+  /** `inScratch`: an agent that edits but has no branch of its own, and runs after a Merge: it works in the merge's scratch copy. */
+  agents: { label: string; model: string; edits: boolean; ownBranch: boolean; inScratch: boolean; tools: string[] }[]
   commands: { label: string; command: string }[]
   humanGates: string[]
   /** A loop's stopping condition: re-asked up to `maxRetries` times (the
@@ -565,6 +580,10 @@ export interface RunSummary {
  *  that spends money and changes repos, so this is shown before it starts. */
 export function summarizeRun(bp: Blueprint): RunSummary {
   const summary: RunSummary = { parallel: [], merges: [], lands: [], agents: [], commands: [], humanGates: [], agentGates: [], ceilingUsd: usdCeiling(bp) }
+  // Everything a Merge leads to, including through a gate's fail edge (the repair loop).
+  const everyEdge = new Map<string, string[]>()
+  for (const e of bp.edges) everyEdge.set(e.from, [...(everyEdge.get(e.from) ?? []), e.to])
+  const afterMerge = reachableFrom(bp.nodes.filter((m) => m.kind === 'merge').map((m) => m.id), everyEdge)
   for (const n of bp.nodes) {
     if (n.kind === 'agent') {
       summary.agents.push({
@@ -572,6 +591,7 @@ export function summarizeRun(bp: Blueprint): RunSummary {
         model: n.config.model,
         edits: n.config.access === 'edit',
         ownBranch: n.config.worktree,
+        inScratch: n.config.access === 'edit' && !n.config.worktree && afterMerge.has(n.id),
         tools: n.config.tools
       })
     } else if (n.kind === 'fanout') {

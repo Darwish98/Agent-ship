@@ -350,6 +350,7 @@ export function installDevMock(): void {
       const project = projects.find((x) => x.id === projectId)!
       return { ok: true, runId: simulateLand(project, buildLandBlueprint({ branch, base, testCommand, resolveConflicts }), branch) }
     },
+    runDefaults: async () => ({ base: 'main', test: 'npm test', testSource: 'package.json "test" script' }),
     checkPlan: async () => ({ exists: false, file: null }),
     savePlan: async () => ({ ok: true }),
     generatePlan: async (projectId, idea) => {
@@ -396,6 +397,7 @@ export function installDevMock(): void {
       return { ok: true }
     },
     listRuns: async () => [...runLog].map(([runId, events]) => ({ runId, events })),
+    commandExists: async (command) => ({ tool: command.trim().split(/\s+/)[0] ?? '', found: true }),
     startRun: async (projectId, slug, inputs) => {
       const f = flowStore.get(flowKey(projectId, slug))
       if (!f) return { ok: false, error: 'No such flow.' }

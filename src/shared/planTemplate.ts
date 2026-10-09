@@ -12,7 +12,6 @@ export const PLAN_FILE = `${PLANNING_DIR}/PLAN.md`
 /** Where projects set up before the planning/ standard kept their plan. Still
  *  read, never written. */
 export const LEGACY_PLAN_FILE = 'PLAN.md'
-export const SPIKES_DIR = `${PLANNING_DIR}/spikes`
 
 export type PlanDocId = 'overview' | 'design' | 'plan'
 

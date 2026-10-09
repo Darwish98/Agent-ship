@@ -20,6 +20,13 @@ const modelSchema = z.enum(['default', 'opus', 'sonnet', 'haiku', 'fable'])
 const triggerConfig = z.object({ type: z.literal('manual') })
 
 const agentConfig = z.object({
+  /** A plan file (a repo-relative path, may be `{{plan}}`) whose `- [ ]` items this step keeps working through: when the
+   *  agent finishes one and ticked it, the engine asks the SAME session for the next, instead of ending the step. */
+  continuePlan: z.string().max(500).optional(),
+  /** At most this many items in one session (default 8). */
+  maxRounds: z.number().int().min(1).max(40).optional(),
+  /** Stop continuing, so the next step starts a fresh context, once the session has used this many tokens (default 400,000). */
+  rotateTokens: z.number().int().positive().optional(),
   role: z.string().max(80),
   model: modelSchema.default('default'),
   /** May contain `{{variable}}` placeholders, see `templateVars`. */

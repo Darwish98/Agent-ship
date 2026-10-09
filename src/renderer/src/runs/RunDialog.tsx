@@ -1,8 +1,12 @@
 import { useEffect, useState, type JSX } from 'react'
-import { summarizeRun, unrunnableReasons } from '../../../shared/blueprint'
+import { resolveForDisplay, summarizeRun, unrunnableReasons, usdCeiling } from '../../../shared/blueprint'
 import { formatUsd } from '../../../shared/runs'
 import type { Blueprint } from '../../../shared/schema'
 import { useRuns } from './RunsProvider'
+
+/** What a run may spend unless the person says otherwise. */
+const DEFAULT_LIMIT_USD = 10
+const MIN_LIMIT_USD = 0.05
 
 export interface RunTarget {
   projectId: string
@@ -21,6 +25,8 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
   const [inputs, setInputs] = useState<Record<string, string>>(target.initialInputs ?? {})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [limit, setLimit] = useState('')
+  const [toolCheck, setToolCheck] = useState<{ tool: string; found: boolean } | null>(null)
 
   useEffect(() => {
     void (async () => {
@@ -34,6 +40,22 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
     })()
   }, [target])
 
+  // The flow's own worst case is rarely what a person means to risk; start from a modest limit they can change.
+  useEffect(() => {
+    if (!bp || limit !== '') return
+    const worst = usdCeiling(bp)
+    if (worst) setLimit(String(Math.min(worst, DEFAULT_LIMIT_USD)))
+  }, [bp, limit])
+
+  // A flow that takes a `test` command: say so now if the program it starts is not installed.
+  const testCommand = inputs.test ?? ''
+  const hasTestInput = Boolean(bp?.inputs.some((i) => i.name === 'test'))
+  useEffect(() => {
+    if (!hasTestInput || !testCommand.trim()) return setToolCheck(null)
+    const t = setTimeout(() => void window.agentShip.commandExists(testCommand).then(setToolCheck), 300)
+    return () => clearTimeout(t)
+  }, [hasTestInput, testCommand])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
@@ -43,13 +65,17 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
   }, [onClose])
 
   const reasons = bp ? unrunnableReasons(bp) : []
-  const summary = bp ? summarizeRun(bp) : null
+  const summary = bp ? summarizeRun(resolveForDisplay(bp, inputs)) : null
   const missing = bp?.inputs.find((i) => i.required && !(inputs[i.name] ?? '').trim())
+  const worstCase = bp ? usdCeiling(bp) : null
+  const limitUsd = Number(limit)
+  const limitOk = Number.isFinite(limitUsd) && limitUsd >= MIN_LIMIT_USD
+  const effectiveLimit = worstCase === null ? null : Math.min(worstCase, limitOk ? limitUsd : worstCase)
 
   async function go(): Promise<void> {
     setBusy(true)
     setError('')
-    const r = await start(target.projectId, target.slug, inputs)
+    const r = await start(target.projectId, target.slug, inputs, limitOk ? limitUsd : undefined)
     setBusy(false)
     if (r.ok) onClose()
     else setError(r.error)
@@ -84,13 +110,31 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
                 {summary.agents.map((a, i) => (
                   <li key={i}>
                     <strong>{a.label}</strong>: {a.edits ? 'can modify files' : 'read-only'}
-                    {a.ownBranch ? ', in its own git branch (your checkout is untouched)' : a.edits ? ', directly in the working directory it is given' : ''}
+                    {a.ownBranch
+                      ? ', in its own git branch (your checkout is untouched)'
+                      : a.inScratch
+                        ? ", in the merge step's scratch copy (your checkout is untouched)"
+                        : a.edits
+                          ? ', directly in the working directory it is given'
+                          : ''}
                     {a.model !== 'default' ? ` · ${a.model}` : ''}
                   </li>
                 ))}
                 {summary.commands.map((c, i) => (
                   <li key={`c${i}`}>
                     <strong>{c.label}</strong>: runs <code>{c.command || '(empty command)'}</code> on your machine
+                  </li>
+                ))}
+                {summary.merges.map((m, i) => (
+                  <li key={`m${i}`}>
+                    <strong>{m.label}</strong>: merges the branch into <code>{m.base || '(no branch set)'}</code> in a scratch copy
+                    {m.agentOnConflict ? '; an agent resolves conflicts if there are any' : ''}. Nothing in your checkout changes yet.
+                  </li>
+                ))}
+                {summary.lands.map((l, i) => (
+                  <li key={`l${i}`}>
+                    <strong>{l.label}</strong>: <strong>moves your <code>{l.base || '(no branch set)'}</code> branch</strong> to the result that was just
+                    tested. This changes your repository.
                   </li>
                 ))}
                 {summary.humanGates.map((g, i) => (
@@ -105,10 +149,10 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
                   </li>
                 ))}
                 <li>
-                  Spends at most <strong>{summary.ceilingUsd !== null ? formatUsd(summary.ceilingUsd) : 'unbounded'}</strong>. The
-                  CLI checks the limit after each model call, so a step may exceed it by one call.
+                  Spends at most <strong>{effectiveLimit !== null ? formatUsd(effectiveLimit) : 'unbounded'}</strong>: the run stops when it reaches
+                  your limit below. The CLI checks it after each model call, so a step may exceed it by one call.
                 </li>
-                <li>Merges nothing. The result is a branch you review and land yourself.</li>
+                {summary.merges.length === 0 && summary.lands.length === 0 && <li>Merges nothing. The result is a branch you review and land yourself.</li>}
               </ul>
             </div>
 
@@ -122,16 +166,30 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
                 </ul>
               </div>
             ) : (
-              bp.inputs.map((input) => (
-                <label className="modal-field" key={input.name}>
-                  {input.label || input.name}
-                  <textarea
-                    rows={3}
-                    value={inputs[input.name] ?? ''}
-                    onChange={(e) => setInputs((prev) => ({ ...prev, [input.name]: e.target.value }))}
-                  />
-                </label>
-              ))
+              <>
+                {bp.inputs.map((input) => (
+                  <label className="modal-field" key={input.name}>
+                    {input.label || input.name}
+                    <textarea
+                      rows={input.name === 'test' || input.name === 'base' ? 1 : 3}
+                      value={inputs[input.name] ?? ''}
+                      onChange={(e) => setInputs((prev) => ({ ...prev, [input.name]: e.target.value }))}
+                    />
+                    {input.name === 'test' && toolCheck && !toolCheck.found && (
+                      <span className="modal-error">
+                        &quot;{toolCheck.tool}&quot; was not found on this machine, so the tests cannot run. Install it, or change this command.
+                      </span>
+                    )}
+                  </label>
+                ))}
+                {worstCase !== null && (
+                  <label className="modal-field">
+                    Stop the run after spending (USD)
+                    <input type="number" min={MIN_LIMIT_USD} step="0.5" value={limit} onChange={(e) => setLimit(e.target.value)} />
+                    <span className="rd-note">A hard stop for the whole run: it ends, with whatever it has landed so far, once it has spent this much.</span>
+                  </label>
+                )}
+              </>
             )}
           </>
         )}
@@ -145,7 +203,7 @@ export function RunDialog({ target, onClose }: { target: RunTarget; onClose: () 
           <button
             type="button"
             className="btn btn-primary"
-            disabled={busy || !bp || reasons.length > 0 || Boolean(missing)}
+            disabled={busy || !bp || reasons.length > 0 || Boolean(missing) || (worstCase !== null && !limitOk)}
             onClick={() => void go()}
           >
             {busy ? 'Starting…' : 'Start run'}

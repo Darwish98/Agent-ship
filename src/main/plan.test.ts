@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LEGACY_PLAN_FILE, PLAN_FILE } from '../shared/patterns'
-import { findPlan, planExists, savePlan } from './plan'
+import { findPlan, savePlan } from './plan'
 
 let dir: string
 
@@ -12,12 +12,12 @@ beforeEach(() => {
 })
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }))
 
-describe('planExists', () => {
+describe('findPlan', () => {
   it('is false when there is no plan file, true once one is written', () => {
-    expect(planExists(dir)).toBe(false)
+    expect(findPlan(dir)).toBeNull()
     fs.mkdirSync(path.join(dir, 'planning'))
     fs.writeFileSync(path.join(dir, PLAN_FILE), 'x')
-    expect(planExists(dir)).toBe(true)
+    expect(findPlan(dir)).toBe(PLAN_FILE)
   })
 
   it('finds planning/PLAN.md first, then a legacy root PLAN.md', () => {
@@ -30,7 +30,7 @@ describe('planExists', () => {
   })
 
   it('never throws for a project directory that does not exist at all', () => {
-    expect(planExists(path.join(dir, 'nope', 'nope'))).toBe(false)
+    expect(findPlan(path.join(dir, 'nope', 'nope'))).toBeNull()
   })
 })
 
@@ -50,7 +50,7 @@ describe('savePlan', () => {
   it('refuses an empty or whitespace-only plan, and touches nothing', () => {
     expect(savePlan(dir, '').ok).toBe(false)
     expect(savePlan(dir, '   \n  ').ok).toBe(false)
-    expect(planExists(dir)).toBe(false)
+    expect(findPlan(dir)).toBeNull()
   })
 
   it('refuses a plan over the size cap', () => {

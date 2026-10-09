@@ -175,8 +175,10 @@ const api = {
     ipcRenderer.invoke('flows:peek', { projectId, slug }),
 
   listRuns: (): Promise<{ runId: string; events: RunEvent[] }[]> => ipcRenderer.invoke('runs:list'),
-  startRun: (projectId: string, slug: string, inputs: Record<string, string>): Promise<StartRunResult> =>
-    ipcRenderer.invoke('runs:start', { projectId, slug, inputs }),
+  startRun: (projectId: string, slug: string, inputs: Record<string, string>, limitUsd?: number): Promise<StartRunResult> =>
+    ipcRenderer.invoke('runs:start', { projectId, slug, inputs, limitUsd }),
+  /** Whether the first word of a command (`pytest`, `cargo`) is something this machine can run. */
+  commandExists: (command: string): Promise<{ tool: string; found: boolean }> => ipcRenderer.invoke('tools:exists', command),
   landPlan: (projectId: string, branch: string): Promise<LandPlan> => ipcRenderer.invoke('land:plan', { projectId, branch }),
   workPlan: (projectId: string, cwd: string): Promise<WorkPlan> => ipcRenderer.invoke('land:workPlan', { projectId, cwd }),
   landWork: (
@@ -197,6 +199,8 @@ const api = {
     resolveConflicts: boolean
   ): Promise<StartRunResult> =>
     ipcRenderer.invoke('runs:land', { projectId, branch, baseBranch, testCommand, resolveConflicts }),
+  /** The base branch and test command a flow's `base` / `test` inputs should start with, found in the project itself. */
+  runDefaults: (projectId: string): Promise<{ base: string; test: string; testSource: string } | null> => ipcRenderer.invoke('runs:defaults', projectId),
   /** Whether the project already has a plan file for Autopilot to read. */
   checkPlan: (projectId: string): Promise<{ exists: boolean; file: string | null }> => ipcRenderer.invoke('plan:check', projectId),
   /** Saves plan text a person pasted themselves. */

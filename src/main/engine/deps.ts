@@ -34,7 +34,7 @@ interface Manifest {
   workspaces?: unknown
 }
 
-const LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json']
+const LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock']
 const INSTALL_TIMEOUT_MS = 10 * 60_000
 
 function readManifest(cwd: string): Manifest | null {
@@ -86,12 +86,22 @@ function relink(link: string, target: string): void {
   fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
 }
 
-/** The real installer: `npm ci` when there is a lockfile, otherwise `npm install`. */
+/** The install command for the package manager whose lockfile is there: pnpm and yarn projects are installed with pnpm and yarn, as their lockfile expects. */
+export function installCommand(dir: string): string {
+  const has = (f: string): boolean => fs.existsSync(path.join(dir, f))
+  // devDependencies are asked for explicitly: a user's npmrc or a stray NODE_ENV=production would
+  // otherwise leave them out, and the project's own build and tests need them.
+  if (has('pnpm-lock.yaml')) return 'pnpm install --frozen-lockfile --prod=false'
+  if (has('yarn.lock')) return 'yarn install --frozen-lockfile --production=false'
+  if (has('package-lock.json') || has('npm-shrinkwrap.json')) return 'npm ci --include=dev --no-audit --no-fund --loglevel=error'
+  return 'npm install --include=dev --no-audit --no-fund --loglevel=error'
+}
+
+/** The real installer. */
 export const npmInstall: Installer = (dir, signal) =>
   new Promise((resolve) => {
-    const lock = LOCKFILES.some((f) => fs.existsSync(path.join(dir, f)))
     let buf = ''
-    const child = spawn(`npm ${lock ? 'ci' : 'install'} --no-audit --no-fund --loglevel=error`, {
+    const child = spawn(installCommand(dir), {
       cwd: dir,
       shell: true,
       windowsHide: true,
@@ -172,8 +182,12 @@ export async function syncDependencies(o: {
           return { ok: false, reason: `Installing the project's dependencies failed:\n${r.output}` }
         }
         if (!covers(entryNm, needed)) {
+          const missing = needed.filter((p) => !covers(entryNm, [p]))
           fs.rmSync(entry, { recursive: true, force: true })
-          return { ok: false, reason: 'The install finished but did not provide every declared package.' }
+          return {
+            ok: false,
+            reason: `The install ran without error but these declared packages are still not installed: ${missing.join(', ')}. Check each name and version in package.json (npm view <package> versions lists what exists).`
+          }
         }
         fs.writeFileSync(done, new Date().toISOString())
         return { ok: true, action: 'installed' }

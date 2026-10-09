@@ -4,3 +4,5 @@
 /dist
 *.tsbuildinfo
 /.claude
+/e2e-shots*
+/electron.vite.config.*.mjs

@@ -1,5 +1,5 @@
 // Autopilot's pipeline, end to end against a real git repo with a fake agent:
-// build -> test -> merge -> test the MERGED result (repaired if it fails) -> land
+// build -> test -> merge -> test the MERGED result (a failure goes back to the builder) -> land
 // -> ask whether the plan is done. These tests exist because the first real
 // project exposed that each stage verified something different, a gate could
 // pass having run no tests, and nothing installed a dependency a branch added.
@@ -48,7 +48,6 @@ class Fake implements AgentAdapter {
 }
 const isPlanCheck = (r: StepRequest): boolean => r.jsonSchema.includes('"done"')
 const isBuilder = (r: StepRequest): boolean => r.access === 'edit' && r.cwd.includes(`${path.sep}wt${path.sep}`) && !r.cwd.endsWith('-merge')
-const isRepair = (r: StepRequest): boolean => r.access === 'edit' && r.cwd.endsWith('-merge')
 
 /** A gate command that passes, printing a test summary, when `file` exists in the directory it runs in. */
 const needs = (file: string): string => `node -e "require('fs').existsSync('${file}')||process.exit(1);console.log('Tests  1 passed (1)')"`
@@ -69,7 +68,7 @@ async function run(
 ): Promise<{ events: RunEvent[]; v: NonNullable<ReturnType<typeof foldRun>> }> {
   const events: RunEvent[] = []
   const engine = new RunEngine({ adapter, worktreeRoot: path.join(root, 'wt'), depsRoot: path.join(root, 'deps'), install, emit: (e) => events.push(e) })
-  const r = await engine.start({ projectId: 'p', projectName: 'repo', projectPath: repo, flowSlug: 'autopilot', blueprint: bp, inputs: { plan: 'planning/PLAN.md' } })
+  const r = await engine.start({ projectId: 'p', projectName: 'repo', projectPath: repo, flowSlug: 'autopilot', blueprint: bp, inputs: { plan: 'planning/PLAN.md', base: 'main', test: 'npm test' } })
   if (!r.ok) throw new Error(r.error)
   await engine.whenDone(r.runId)
   return { events, v: foldRun(events)! }
@@ -111,17 +110,17 @@ describe('autopilot pipeline', () => {
     expect(onMain('a.test.txt')).toBe(true)
   })
 
-  it('a merged result that fails is repaired in the scratch copy before main moves', async () => {
+  it('a merged result that fails goes back to the builder, and only lands once it passes', async () => {
     const fake = new Fake((req) => {
       if (isPlanCheck(req)) return ok({ structured: { done: true, reason: '' } })
-      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
-      if (isRepair(req)) fs.writeFileSync(path.join(req.cwd, 'fixed.txt'), 'x')
-      return ok()
+      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, req.resume ? 'fixed.txt' : 'built.txt'), 'x')
+      return ok({ sessionId: req.sessionId })
     })
-    // The branch is fine on its own; the merged result needs a file only the repair adds.
+    // The branch is fine on its own; the merged result needs a file only the builder's second go adds.
     const { events, v } = await run(fake, autopilot(needs('built.txt'), needs('fixed.txt')))
     expect(v.status).toBe('passed')
-    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'repair', 'verify', 'land', 'progress', 'plancheck'])
+    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'build', 'tests', 'merge', 'verify', 'land', 'progress', 'plancheck'])
+    expect(fake.reqs.filter(isBuilder)[1].resume).toBe(true) // the same session fixes it
     expect(onMain('fixed.txt')).toBe(true)
   })
 
@@ -129,9 +128,8 @@ describe('autopilot pipeline', () => {
     const before = git('rev-parse', 'main')
     let n = 0
     const fake = new Fake((req) => {
-      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
-      if (isRepair(req)) fs.writeFileSync(path.join(req.cwd, `attempt-${++n}.txt`), 'x') // changes something, never the right thing
-      return ok()
+      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, req.resume ? `attempt-${++n}.txt` : 'built.txt'), 'x') // changes something, never the right thing
+      return ok({ sessionId: req.sessionId })
     })
     const { v } = await run(fake, autopilot(needs('built.txt'), needs('never.txt')))
     expect(v.status).toBe('failed')
@@ -140,7 +138,7 @@ describe('autopilot pipeline', () => {
   })
 })
 
-describe('a repair that changes nothing', () => {
+describe('a builder that changes nothing when sent back', () => {
   const flag = (): string => path.join(root, 'flag').split(path.sep).join('/')
   /** Fails the first time it runs and passes after: an environmental flake. */
   const flaky = (): string => `node -e "const fs=require('fs');if(fs.existsSync('${flag()}')){console.log('Tests  1 passed (1)');process.exit(0)}fs.writeFileSync('${flag()}','x');process.exit(1)"`
@@ -148,41 +146,42 @@ describe('a repair that changes nothing', () => {
   it('once is fine: an environmental failure is re-run and passes, and it lands', async () => {
     const fake = new Fake((req) => {
       if (isPlanCheck(req)) return ok({ structured: { done: true, reason: '' } })
-      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
-      return ok({ result: 'Nothing is wrong; it was a timeout.' }) // the repair edits nothing
+      if (isBuilder(req) && !req.resume) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
+      return ok({ sessionId: req.sessionId, result: 'Nothing is wrong; it was a timeout.' }) // sent back, it edits nothing
     })
     const { events, v } = await run(fake, autopilot(needs('built.txt'), flaky()))
     expect(v.status).toBe('passed')
-    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'repair', 'verify', 'land', 'progress', 'plancheck'])
+    expect(order(events)).toEqual(['build', 'tests', 'merge', 'verify', 'build', 'tests', 'merge', 'verify', 'land', 'progress', 'plancheck'])
   })
 
   it('twice in a row ends the run with what the agent said, instead of spending the remaining attempts', async () => {
     const fake = new Fake((req) => {
-      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
-      return ok({ result: 'I could not find anything to change.' })
+      if (isBuilder(req) && !req.resume) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
+      return ok({ sessionId: req.sessionId, result: 'I could not find anything to change.' })
     })
     const before = git('rev-parse', 'main')
     const { events, v } = await run(fake, autopilot(needs('built.txt'), needs('never.txt')))
     expect(v.status).toBe('failed')
     expect(v.reason).toMatch(/changed nothing 2 times in a row/)
     expect(v.reason).toMatch(/could not find anything to change/)
-    // verify, repair, verify, repair - and no third verify.
-    expect(order(events).filter((n) => n === 'verify')).toHaveLength(2)
-    expect(order(events).filter((n) => n === 'repair')).toHaveLength(2)
+    expect(order(events).filter((n) => n === 'verify')).toHaveLength(2) // no third attempt
+    expect(order(events).filter((n) => n === 'build')).toHaveLength(3)
     expect(git('rev-parse', 'main')).toBe(before)
   })
 
-  it('a repair that does change something resets the count', async () => {
-    let repairs = 0
+  it('a go that does change something resets the count', async () => {
+    let resumes = 0
     const fake = new Fake((req) => {
       if (isPlanCheck(req)) return ok({ structured: { done: true, reason: '' } })
-      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
-      if (isRepair(req) && ++repairs === 2) fs.writeFileSync(path.join(req.cwd, 'fixed.txt'), 'x') // idle, then a real fix
-      return ok()
+      if (isBuilder(req)) {
+        if (!req.resume) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
+        else if (++resumes === 2) fs.writeFileSync(path.join(req.cwd, 'fixed.txt'), 'x') // idle, then a real fix
+      }
+      return ok({ sessionId: req.sessionId })
     })
     const { v } = await run(fake, autopilot(needs('built.txt'), needs('fixed.txt')))
     expect(v.status).toBe('passed')
-    expect(repairs).toBe(2)
+    expect(resumes).toBe(2)
   })
 })
 
@@ -270,7 +269,7 @@ describe('dependencies a branch adds', () => {
   })
 })
 
-describe('progress is counted from the plan, and each item gets a fresh session', () => {
+describe('one builder session goes item after item, and progress is counted from the plan', () => {
   const tick = (cwd: string): void => {
     const file = path.join(cwd, 'planning', 'PLAN.md')
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('- [ ]', '- [x]'))
@@ -284,49 +283,118 @@ describe('progress is counted from the plan, and each item gets a fresh session'
   /** Counts how many times it actually runs, and prints a passing test summary. */
   const counting = (): string => `node -e "require('fs').appendFileSync('${counter()}','x');console.log('Tests  1 passed (1)')"`
 
-  it('works the items one per pass until none is left, asks the agent once at the end, and never per item', async () => {
-    threeItems()
-    let audits = 0
-    const fake = new Fake((req) => {
-      if (isPlanCheck(req)) {
-        audits++
-        return ok({ structured: { done: true, reason: 'verified' } })
-      }
+  /** The shipped builder, with the session knobs turned. */
+  const tuned = (bp: Blueprint, patch: Record<string, unknown>): Blueprint => {
+    for (const n of bp.nodes) if (n.kind === 'agent' && n.id === 'build') Object.assign(n.config, patch)
+    return bp
+  }
+  /** A builder that completes one item per call, as models do, and writes a file for it. */
+  const onePerCall = (extra?: (req: StepRequest) => Partial<StepResult>): Fake => {
+    const fake: Fake = new Fake((req) => {
+      if (isPlanCheck(req)) return ok({ structured: { done: true, reason: 'verified' } })
       if (isBuilder(req)) {
         tick(req.cwd)
         fs.writeFileSync(path.join(req.cwd, `item-${fake.reqs.length}.txt`), 'x')
       }
-      return ok({ sessionId: req.sessionId })
+      return ok({ sessionId: req.sessionId, ...(extra ? extra(req) : {}) })
     })
+    return fake
+  }
+
+  it('does the whole plan in ONE builder step: the engine asks the same session for the next item, and the agent is asked once, at the end', async () => {
+    threeItems()
+    const fake = onePerCall()
     const { events, v } = await run(fake, autopilot(counting()))
     expect(v.status).toBe('passed')
-    expect(audits).toBe(1) // not one per item
-    expect(order(events).filter((n) => n === 'build')).toHaveLength(3)
-    expect(order(events).filter((n) => n === 'progress')).toHaveLength(3)
-    expect(order(events).filter((n) => n === 'land')).toHaveLength(3)
+    expect(order(events).filter((n) => n === 'build')).toHaveLength(1) // one step, three rounds
+    expect(order(events).filter((n) => n === 'land')).toHaveLength(1) // one merge and landing for the lot
+    expect(order(events).filter((n) => n === 'progress')).toHaveLength(1)
+    expect(fake.reqs.filter(isPlanCheck)).toHaveLength(1) // not one per item
+    const calls = fake.reqs.filter(isBuilder)
+    expect(calls.map((c) => c.resume)).toEqual([false, true, true]) // the same session, kept warm
+    expect(new Set(calls.map((c) => c.sessionId)).size).toBe(1)
+    expect(calls[1].prompt).toMatch(/Continue with the next item that is not ticked yet: 2\. \*\*Two\.\*\*/)
+    expect(calls[2].prompt).toMatch(/3\. \*\*Three\.\*\*/)
     expect(fs.readFileSync(path.join(repo, 'planning', 'PLAN.md'), 'utf8')).not.toContain('- [ ]')
-    const results = events.filter((e) => e.type === 'gate.result' && e.nodeId === 'progress') as { pass: boolean; detail: string }[]
-    expect(results.map((r) => r.pass)).toEqual([false, false, true])
-    expect(results[0].detail).toMatch(/1 of 3 items.*Next: 2\. \*\*Two\.\*\*/)
+    const built = events.find((e) => e.type === 'node.finished' && e.nodeId === 'build') as { summary: string; costUsd: number }
+    expect(built.summary).toMatch(/One session, 3 rounds, 3 plan items completed/)
+    expect(built.costUsd).toBeCloseTo(0.15) // every round counted
   })
 
-  it('every pass starts the builder fresh with the plan prompt, not a resumed ever-longer conversation', async () => {
+  it('ends the session once its context has grown (rotation), and the next pass starts a fresh one with what is left', async () => {
     threeItems()
+    const fake = onePerCall()
+    // Each fake call bills 100 tokens; rotating at 150 ends the session after two rounds.
+    const { events, v } = await run(fake, tuned(autopilot(counting()), { rotateTokens: 150 }))
+    expect(v.status).toBe('passed')
+    expect(order(events).filter((n) => n === 'build')).toHaveLength(2) // 2 items, then 1 item in a fresh session
+    const calls = fake.reqs.filter(isBuilder)
+    expect(calls.map((c) => c.resume)).toEqual([false, true, false])
+    expect(calls[2].sessionId).not.toBe(calls[0].sessionId)
+    expect(calls[2].prompt).toMatch(/2 of 3 items.*are ticked/) // told what is left
+    const results = events.filter((e) => e.type === 'gate.result' && e.nodeId === 'progress') as { pass: boolean }[]
+    expect(results.map((r) => r.pass)).toEqual([false, true])
+  })
+
+  it('stops going on when a round completes nothing: the step ends and the next pass starts clean', async () => {
+    threeItems()
+    let calls = 0
     const fake = new Fake((req) => {
       if (isPlanCheck(req)) return ok({ structured: { done: true, reason: '' } })
       if (isBuilder(req)) {
-        tick(req.cwd)
-        fs.writeFileSync(path.join(req.cwd, `item-${fake.reqs.length}.txt`), 'x')
+        calls++
+        if (calls === 1) tick(req.cwd) // one item, then it has nothing more to give
+        fs.writeFileSync(path.join(req.cwd, `item-${calls}.txt`), 'x')
       }
       return ok({ sessionId: req.sessionId })
     })
     await run(fake, autopilot(counting()))
-    const builds = fake.reqs.filter(isBuilder)
-    expect(builds).toHaveLength(3)
-    expect(builds.map((b) => b.resume)).toEqual([false, false, false])
-    expect(new Set(builds.map((b) => b.sessionId)).size).toBe(3)
-    for (const b of builds) expect(b.prompt).toMatch(/Implement the SINGLE next unfinished item/)
-    expect(builds[1].prompt).toMatch(/1 of 3 items.*are ticked/) // told what is left
+    // call 1 ticks; call 2 (the continuation) ticks nothing, so the step ends there, not after eight rounds.
+    expect(fake.reqs.filter(isBuilder).slice(0, 2).map((c) => c.resume)).toEqual([false, true])
+    expect(fake.reqs.filter(isBuilder)[2]?.resume).toBe(false) // the pass after that is a fresh session
+  })
+
+  it('stops after the item limit for one session', async () => {
+    threeItems()
+    const fake = onePerCall()
+    const { events, v } = await run(fake, tuned(autopilot(counting()), { maxRounds: 2 }))
+    expect(v.status).toBe('passed')
+    expect(fake.reqs.filter(isBuilder).map((c) => c.resume)).toEqual([false, true, false]) // two items, then a fresh session for the third
+    expect(order(events).filter((n) => n === 'build')).toHaveLength(2)
+  })
+
+  it('stays inside the step\'s own dollar cap while it goes on', async () => {
+    threeItems()
+    const fake = onePerCall(() => ({ costUsd: 0.4 }))
+    const bp = tuned(autopilot(counting()), {})
+    for (const n of bp.nodes) if (n.id === 'build') n.budget = { ...n.budget, maxUsd: 0.5 }
+    const { events } = await run(fake, bp)
+    const first = events.find((e) => e.type === 'node.finished' && e.nodeId === 'build') as { costUsd: number }
+    expect(first.costUsd).toBeLessThanOrEqual(0.9) // 0.4, then at most what was left of 0.5 - never three full rounds in one step
+    expect(fake.reqs.filter(isBuilder)[1].maxUsd).toBeLessThanOrEqual(0.1 + 1e-9)
+  })
+
+  it('shows what the CLI refused, and tells the agent how to run commands so they are not refused again', async () => {
+    threeItems()
+    let n = 0
+    const fake = onePerCall(() => (++n === 1 ? { denials: ['Bash: cd app && npm test'] } : {}))
+    const { events } = await run(fake, autopilot(counting()))
+    expect(fake.reqs.filter(isBuilder)[1].prompt).toMatch(/refused earlier: Bash: cd app && npm test/)
+    expect(fake.reqs.filter(isBuilder)[1].prompt).toMatch(/no `cd`, pipes/)
+    const built = events.find((e) => e.type === 'node.finished' && e.nodeId === 'build') as { summary: string }
+    expect(built.summary).toMatch(/Commands the CLI refused: Bash: cd app && npm test/)
+  })
+
+  it('a session that completes nothing, twice running, ends the run instead of spending money going nowhere', async () => {
+    threeItems()
+    const fake = new Fake((req) => {
+      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, `item-${fake.reqs.length}.txt`), 'x') // works, ticks nothing
+      return ok({ sessionId: req.sessionId })
+    })
+    const { events, v } = await run(fake, autopilot(counting()))
+    expect(v.status).toBe('failed')
+    expect(v.reason).toMatch(/No plan item was completed in the last 2 sessions/)
+    expect(order(events).filter((n) => n === 'build')).toHaveLength(3) // never close to the 40-pass cap
   })
 
   it('a failed TEST still resumes the same session: that is a repair, not the next item', async () => {
@@ -354,12 +422,11 @@ describe('progress is counted from the plan, and each item gets a fresh session'
     expect(verify.detail).toMatch(/Skipped: this exact tree already passed/)
   })
 
-  it('but a merged result that differs from what was tested IS tested, and a repair is tested after it changes the tree', async () => {
+  it('but a merged result that differs from what was tested IS tested, and a fix is tested after it changes the tree', async () => {
     const fake = new Fake((req) => {
       if (isPlanCheck(req)) return ok({ structured: { done: true, reason: '' } })
-      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x')
-      if (isRepair(req)) fs.writeFileSync(path.join(req.cwd, 'fixed.txt'), 'x')
-      return ok()
+      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, req.resume ? 'fixed.txt' : 'built.txt'), 'x')
+      return ok({ sessionId: req.sessionId })
     })
     const { events, v } = await run(fake, autopilot(needs('built.txt'), needs('fixed.txt')))
     expect(v.status).toBe('passed')
@@ -380,18 +447,52 @@ describe('progress is counted from the plan, and each item gets a fresh session'
     expect(audits).toBe(2)
   })
 
-  it('stops with a clear reason when the plan is still unfinished at the pass cap', async () => {
-    threeItems()
+  it('a builder that changes nothing two passes in a row ends the run, instead of going round again forever', async () => {
+    // Found by a real run: the builder left an item unticked, did nothing on four more passes, and the
+    // plan-check kept saying "not done" each time (about $0.25 wasted).
+    let audits = 0
     const fake = new Fake((req) => {
-      // The builder never ticks anything, so the plan never shrinks.
-      if (isBuilder(req)) fs.writeFileSync(path.join(req.cwd, `item-${fake.reqs.length}.txt`), 'x')
-      return ok({ sessionId: req.sessionId })
+      if (isPlanCheck(req)) {
+        audits++
+        return ok({ structured: { done: false, reason: 'item 3 is not ticked' } })
+      }
+      if (isBuilder(req) && fake.reqs.filter(isBuilder).length === 1) fs.writeFileSync(path.join(req.cwd, 'built.txt'), 'x') // only the first pass does anything
+      return ok({ sessionId: req.sessionId, result: 'I could not run the tests, so I left it.' })
     })
     const bp = autopilot(counting())
-    for (const n of bp.nodes) if (n.id === 'progress') n.budget = { maxRetries: 2 }
+    const { events, v } = await run(fake, bp)
+    expect(v.status).toBe('failed')
+    expect(v.reason).toMatch(/changed nothing 2 times in a row, so this is not making progress/)
+    expect(v.reason).toMatch(/could not run the tests/)
+    expect(order(events).filter((n) => n === 'build')).toHaveLength(3) // one real pass, two idle ones
+    expect(audits).toBe(2)
+  })
+
+  it('landing something new counts as progress and resets the idle count', async () => {
+    let builds = 0
+    let audits = 0
+    const fake = new Fake((req) => {
+      if (isPlanCheck(req)) return ok({ structured: { done: ++audits >= 4, reason: 'more' } })
+      if (isBuilder(req)) {
+        builds++
+        // idle, real, idle, real: never two idle in a row
+        if (builds % 2 === 0) fs.writeFileSync(path.join(req.cwd, `item-${builds}.txt`), 'x')
+      }
+      return ok({ sessionId: req.sessionId })
+    })
+    const { v } = await run(fake, autopilot(counting()))
+    expect(v.status).toBe('passed')
+    expect(builds).toBe(4)
+  })
+
+  it('stops with a clear reason when the plan is still unfinished at the pass cap', async () => {
+    threeItems()
+    const fake = onePerCall()
+    const bp = tuned(autopilot(counting()), { maxRounds: 1 }) // one item per session, so passes are what run out
+    for (const n of bp.nodes) if (n.id === 'progress') n.budget = { maxRetries: 1 }
     const { v } = await run(fake, bp)
     expect(v.status).toBe('failed')
-    expect(v.reason).toMatch(/Stopped after 3 passes with the plan unfinished \(the cap is 2\)/)
-    expect(v.reason).toMatch(/0 of 3 items/)
+    expect(v.reason).toMatch(/Stopped after 2 passes with the plan unfinished \(the cap is 1\)/)
+    expect(v.reason).toMatch(/2 of 3 items/)
   })
 })

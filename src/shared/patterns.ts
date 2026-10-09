@@ -22,6 +22,12 @@ const trigger = (id = 'start', col = 0, row = 0): BlueprintNode => ({
   config: { type: 'manual' }
 })
 
+const withMinutes = (node: BlueprintNode, maxMinutes: number): BlueprintNode => ({ ...node, budget: { ...node.budget, maxMinutes } })
+
+/** An agent that keeps working through the plan, item after item, in one session (see `continuePlan`). */
+const keepsGoing = (node: BlueprintNode, plan: string): BlueprintNode =>
+  node.kind === 'agent' ? { ...node, config: { ...node.config, continuePlan: plan, maxRounds: 8, rotateTokens: 400_000 } } : node
+
 const agent = (
   id: string,
   label: string,
@@ -350,33 +356,32 @@ const TOURNAMENT: Blueprint = {
 
 export { DESIGN_FILE, LEGACY_PLAN_FILE, OVERVIEW_FILE, PLAN_FILE, PLANNING_DIR } from './planTemplate'
 
-/** Brief for the builder: work the plan one item at a time, in whatever order
- *  makes sense, never all at once - each item becomes its own gated, landed
- *  branch before the next is even chosen. */
+/** Brief for the builder. It does one item at a time, completely; the ENGINE asks the same session for the
+ *  next one, so a session is a long run of items with one context, not a model deciding when to stop. */
 const AUTOPILOT_BUILD_PROMPT = [
-  'Read the plan at {{plan}}. Look at the current state of the repository',
-  '(recent commits, existing files) to see what has already been done.',
+  'You are building the project described by the plan at {{plan}}. First look at the repository',
+  '(existing files, recent commits) to see what is already done.',
   '',
-  'Implement the SINGLE next unfinished item from the plan - the smallest',
-  'coherent piece of work you can land on its own. Do not try to do',
-  'everything at once; a later pass will come back for the rest.',
+  'Work on the FIRST item that is not ticked yet, and do it properly: build it, run the build and the',
+  'tests yourself (`{{test}}`), fix what fails, and leave the project working. Then tick the item in the',
+  'plan (change its `- [ ]` to `- [x]`, nothing else) and reply in two sentences. You will be asked to',
+  'continue with the next item straight away, so do not start on it yourself.',
   '',
-  'How the result is checked, so build for it:',
-  '- If the item has a "Done when" line, that is the standard it must meet.',
-  '- The tests are run for you (`npm test`) and the gate FAILS if no tests run at all.',
-  '  Add or update at least one real automated test that proves this item.',
-  '- Declare every package you import in package.json; the engine installs from it.',
-  '  Never rely on a globally installed tool.',
-  '- Never edit the test script or its flags to make a check pass.',
+  'Commands: you can run the whole toolchain of the project (install, build, test, scripts). Run each',
+  'command plainly from the project root: commands with `cd`, pipes, `&&` or redirects are refused, and',
+  'nothing can approve a refused command. If you are unsure a package or version exists, look it up',
+  '(for npm: `npm view <package> versions`) instead of guessing. Do not run `git commit` or `git push`:',
+  'your work is committed for you.',
   '',
-  'Tracking progress: items in the plan are tick-boxes. When this item is finished and its',
-  'tests pass, tick it in the plan file by changing its `- [ ]` to `- [x]` (change nothing',
-  'else in the plan). That is how the loop knows what is left.',
-  'If every item is already ticked but a check below says something is missing, build what',
-  'it reports, and un-tick (or add) the matching item so the plan tells the truth.',
+  'How your work is checked afterwards: the engine runs `{{test}}` on your branch, and that check FAILS if no',
+  'tests run at all. So the project needs a working test setup (for a Node project, a `test` script in',
+  'package.json) and at least one real test for what you built. Declare every package you import in',
+  'package.json; the engine installs from it. Never edit the test script or its flags to make a check pass.',
   '',
-  'When you are done, reply with a short summary of what you implemented and',
-  'which item of the plan it corresponds to.'
+  'If the plan has no tick-boxes yet, first rewrite EVERY item as `- [ ] N. ...` (keeping its text exactly),',
+  'ticking the ones already done.',
+  'If every item is already ticked but a check below says something is missing, build what it reports, and',
+  'un-tick (or add) the matching item so the plan tells the truth.'
 ].join('\n')
 
 /** Brief for the loop's own stopping condition: an honest, structured yes/no
@@ -393,8 +398,15 @@ const AUTOPILOT_CHECK_PROMPT = [
 ].join('\n')
 
 /** Bumped when the shipped Autopilot changes shape. v2: the merged result is tested and repaired before landing.
- *  v3: progress is read from the plan's tick-boxes (no agent call per item) and each item gets a fresh session. */
-export const AUTOPILOT_VERSION = 3
+ *  v3: progress is read from the plan's tick-boxes (no agent call per item) and each item gets a fresh session.
+ *  v4: the builder may run the tests itself, ticks an item when it is built and tested (not when it has "verified" it,
+ *  which it could not), and converts a plan without tick-boxes on its first pass.
+ *  v5: the base branch and the test command are inputs ({{base}}, {{test}}), filled in per project, not `main` and `npm test`.
+ *  v6: long working sessions over a stretch of the plan (not one small item per pass), a builder that can run the project's own
+ *  toolchain, and no separate repair agent (a failing merged result goes back to the builder).
+ *  v7: the engine keeps ONE builder session going item after item (not one item per pass), rotating the context when it grows,
+ *  and the run stops when sessions stop completing items, not at a fixed pass count. */
+export const AUTOPILOT_VERSION = 7
 
 /**
  * A project's saved Autopilot flow that is still exactly the shipped v1 (the
@@ -404,53 +416,67 @@ export const AUTOPILOT_VERSION = 3
 export function isStaleShippedAutopilot(bp: Blueprint): boolean {
   if (bp.name !== 'Autopilot' || bp.version >= AUTOPILOT_VERSION) return false
   const ids = bp.nodes.map((n) => n.id).sort().join(',')
-  if (ids !== 'build,land,merge,plancheck,start,tests' && ids !== 'build,land,merge,plancheck,repair,start,tests,verify') return false
+  // Every earlier shape, untouched, is safe to replace; anything the person changed is left alone.
+  const shipped = [
+    'build,land,merge,plancheck,start,tests',
+    'build,land,merge,plancheck,repair,start,tests,verify',
+    'build,land,merge,plancheck,progress,repair,start,tests,verify',
+    'build,land,merge,plancheck,progress,start,tests,verify'
+  ]
+  if (!shipped.includes(ids)) return false
   const tests = bp.nodes.find((n) => n.id === 'tests')
-  return tests?.kind === 'gate' && tests.config.command === 'npm test'
+  return tests?.kind === 'gate' && (tests.config.command === 'npm test' || tests.config.command === '{{test}}')
 }
 
-/** The most plan items one Autopilot run works through. */
-const AUTOPILOT_MAX_ITEMS = 25
+/** The most sessions one Autopilot run starts. The real guards are the person's spending limit and the stall stop (two sessions that finish nothing). */
+const AUTOPILOT_MAX_PASSES = 40
+
+/** What the builder may run: the project's own toolchain, in its own branch's directory. Anything else is denied, since nothing can approve a prompt. */
+const BUILDER_TOOLS = [
+  'Bash(npm *)', 'Bash(npx *)', 'Bash(pnpm *)', 'Bash(yarn *)', 'Bash(node *)',
+  'Bash(python *)', 'Bash(python3 *)', 'Bash(pip *)', 'Bash(pip3 *)', 'Bash(pytest*)',
+  'Bash(cargo *)', 'Bash(go *)', 'Bash(make*)', 'Bash({{test}})',
+  // Looking around and the odd directory: harmless, and the commands a model reaches for first.
+  'Bash(cd *)', 'Bash(ls*)', 'Bash(pwd)', 'Bash(cat *)', 'Bash(mkdir *)', 'Bash(git status*)', 'Bash(git diff*)', 'Bash(git log*)'
+]
 
 const AUTOPILOT: Blueprint = {
   schemaVersion: SCHEMA_VERSION,
   name: 'Autopilot',
   description:
-    'Works a plan one item at a time - build, test, merge, land - then asks an agent if the plan is fully done yet, and loops back if not. The loop cap (a retry cap on the last gate) is the safety net.',
+    'Works through a plan in long sessions: one builder session, with your project’s own toolchain, goes item after item (the engine keeps asking it for the next, and starts a fresh context when it grows). Then the tests run, it is merged and landed, and the loop repeats until every item is ticked, when an agent checks the plan really is done. Your spending limit and a stall stop are the safety nets.',
   version: AUTOPILOT_VERSION,
   defaultBudget: { maxUsd: 1 },
-  inputs: [{ name: 'plan', label: `Plan file (a path in the repo, e.g. ${PLAN_FILE})`, required: true }],
+  inputs: [
+    { name: 'plan', label: `Plan file (a path in the repo, e.g. ${PLAN_FILE})`, required: true },
+    { name: 'base', label: 'Branch to land on (filled in from the repo)', required: true },
+    { name: 'test', label: 'Test command (detected from the repo; edit it if wrong)', required: true }
+  ],
   nodes: [
     trigger(),
-    agent('build', 'Builder', AUTOPILOT_BUILD_PROMPT, 1, { worktree: true, edit: true, maxTokens: 600_000, maxUsd: 1 }),
+    keepsGoing(withMinutes(agent('build', 'Builder', AUTOPILOT_BUILD_PROMPT, 1, { worktree: true, edit: true, maxTokens: 6_000_000, maxUsd: 5, tools: BUILDER_TOOLS }), 45), '{{plan}}'),
     {
       // The builder gets fast feedback in its own session. A pass that ran no
       // tests is not a pass (requireTests), or the gate verifies nothing.
       id: 'tests', kind: 'gate', label: 'Tests pass', position: at(2), budget: { maxRetries: 3 },
-      config: { check: 'command', command: 'npm test', requireTests: true, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
+      config: { check: 'command', command: '{{test}}', requireTests: true, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
-    { id: 'merge', kind: 'merge', label: 'Merge into main', position: at(3), budget: { maxUsd: 1 }, config: { baseBranch: 'main', resolveConflicts: true, resolverPrompt: RESOLVER_PROMPT } },
+    { id: 'merge', kind: 'merge', label: 'Merge into the base branch', position: at(3), budget: { maxUsd: 1 }, config: { baseBranch: '{{base}}', resolveConflicts: true, resolverPrompt: RESOLVER_PROMPT } },
     {
-      // What lands is the merged result, so that is what is tested, with the
-      // same repair loop as a manual Land. `main` only moves after this passes.
+      // What lands is the merged result, so that is what is tested (skipped when it is
+      // exactly the tree that just passed). A failure goes back to the builder.
+      // The base branch only moves after this passes.
       id: 'verify', kind: 'gate', label: 'Test the merged result', position: at(4), budget: { maxMinutes: 15, maxRetries: LAND_REPAIR_ATTEMPTS },
-      config: { check: 'command', command: 'npm test', requireTests: true, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
+      config: { check: 'command', command: '{{test}}', requireTests: true, instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
-    {
-      id: 'repair', kind: 'agent', label: 'Repair the merged result', position: at(4, 1), budget: { maxUsd: 1 },
-      config: {
-        role: 'Repair', model: 'default', prompt: repairPrompt('main', 'npm test'), worktree: false, access: 'edit',
-        tools: ['Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git status *)', 'Bash(npm test)'], outputSchema: ''
-      }
-    },
-    { id: 'land', kind: 'land', label: 'Land on main', position: at(5), config: { baseBranch: 'main' } },
+    { id: 'land', kind: 'land', label: 'Land on the base branch', position: at(5), config: { baseBranch: '{{base}}' } },
     {
       // The loop primitive: this gate's `fail` edge is "not done yet, go
       // around again"; its retry cap is the run's hard stop regardless of
       // what the agent decides, so a confused judge can never run forever.
       // Progress is counted from the plan's tick-boxes: free and instant, instead of
       // an agent call after every item. Its retry cap is the most items one run does.
-      id: 'progress', kind: 'gate', label: 'Items left in the plan?', position: at(6), budget: { maxRetries: AUTOPILOT_MAX_ITEMS },
+      id: 'progress', kind: 'gate', label: 'Items left in the plan?', position: at(6), budget: { maxRetries: AUTOPILOT_MAX_PASSES },
       config: { check: 'plan', planFile: '{{plan}}', command: '', instructions: '', agentPrompt: '', agentModel: 'default', agentTools: [] }
     },
     {
@@ -467,8 +493,7 @@ const AUTOPILOT: Blueprint = {
     edge('tests', 'build', 'verdict', 'fail'),
     edge('merge', 'verify', 'branch'),
     edge('verify', 'land', 'verdict', 'pass'),
-    edge('verify', 'repair', 'verdict', 'fail'),
-    edge('repair', 'verify', 'branch'),
+    edge('verify', 'build', 'verdict', 'fail'),
     edge('land', 'progress', 'branch'),
     edge('progress', 'plancheck', 'verdict', 'pass'),
     edge('progress', 'build', 'verdict', 'fail'),

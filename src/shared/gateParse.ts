@@ -221,6 +221,8 @@ export function ranNoTests(output: string): boolean {
     /\bno tests ran\b/i.test(text) ||
     /^\s*0 passing\b/m.test(text) ||
     /Tests run:\s*0\b/.test(text) ||
+    /^Ran 0 tests\b/m.test(text) || // python unittest
+    (/\[no test files\]/.test(text) && !/^ok\s/m.test(text)) || // go test, in every package
     /\brunning 0 tests\b/.test(text)
   )
 }

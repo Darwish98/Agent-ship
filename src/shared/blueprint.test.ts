@@ -5,13 +5,14 @@ import {
   hasErrors,
   parallelSection,
   renderTemplate,
+  resolveForDisplay,
   summarizeRun,
   templateVars,
   unrunnableReasons,
   usdCeiling,
   validateBlueprint
 } from './blueprint'
-import { buildPlanBlueprint, DESIGN_FILE, emptyBlueprint, fromPattern, isStaleShippedAutopilot, OVERVIEW_FILE, PATTERNS, PLAN_FILE, PLANNING_DIR } from './patterns'
+import { buildLandBlueprint, buildPlanBlueprint, DESIGN_FILE, emptyBlueprint, fromPattern, isStaleShippedAutopilot, OVERVIEW_FILE, PATTERNS, PLAN_FILE, PLANNING_DIR } from './patterns'
 import { promptVars } from './runs'
 import { parseBlueprint, type Blueprint } from './schema'
 
@@ -261,7 +262,7 @@ describe('run planning helpers', () => {
     expect(flow).toEqual(
       expect.arrayContaining([
         'build->tests', 'tests->merge:pass', 'tests->build:fail', 'merge->verify',
-        'verify->land:pass', 'verify->repair:fail', 'repair->verify', 'land->progress', 'progress->plancheck:pass',
+        'verify->land:pass', 'verify->build:fail', 'land->progress', 'progress->plancheck:pass',
         'progress->build:fail', 'plancheck->build:fail'
       ])
     )
@@ -273,26 +274,47 @@ describe('run planning helpers', () => {
     }
     // The builder is told how it is checked, and not to tamper with the check.
     const build = bp.nodes.find((n) => n.id === 'build')!
-    expect(build.kind === 'agent' && build.config.prompt).toMatch(/Never edit the test script/)
-    expect(build.kind === 'agent' && build.config.prompt).toMatch(/Declare every package you import in package\.json/)
+    expect(build.kind === 'agent' && build.config.prompt).toMatch(/Never edit the test\s+script/)
+    expect(build.kind === 'agent' && build.config.prompt).toMatch(/Declare every\s+package you import in\s+package\.json/)
+    // A long session with the means to run the project, not one small step with its hands tied.
+    expect(build.kind === 'agent' && build.config.prompt).toMatch(/FIRST item that is not ticked yet/)
+    expect(build.kind === 'agent' && build.config.prompt).toMatch(/npm view/)
+    expect(build.kind === 'agent' && build.config.tools).toEqual(expect.arrayContaining(['Bash(npm *)', 'Bash(node *)', 'Bash({{test}})']))
+    expect(build.kind === 'agent' && build.config.continuePlan).toBe('{{plan}}') // the engine keeps one session going item after item
+    expect(build.budget?.maxMinutes).toBeGreaterThanOrEqual(30)
+    expect(bp.nodes.some((n) => n.id === 'repair')).toBe(false) // no second agent: a failing merged result goes back to the builder
     expect(unrunnableReasons(bp)).toEqual([])
   })
 
   it('replaces only an untouched copy of the old Autopilot flow saved in a project', () => {
     const current = fromPattern(PATTERNS[4])
     expect(isStaleShippedAutopilot(current)).toBe(false)
+    // Earlier versions had a separate repair agent and wrote the literal command, not {{test}}.
+    const older = (version: number, shape: 'v1' | 'v2' | 'v3'): Blueprint => {
+      const bp = fromPattern(PATTERNS[4])
+      bp.version = version
+      const t = bp.nodes.find((n) => n.id === 'tests')!
+      if (t.kind === 'gate') t.config.command = 'npm test'
+      if (shape !== 'v1') bp.nodes.push({ id: 'repair', kind: 'agent', label: 'Repair the merged result', position: { x: 0, y: 0 }, config: { role: 'Repair', model: 'default', prompt: 'fix it', worktree: false, access: 'edit', tools: [], outputSchema: '' } })
+      if (shape === 'v1') bp.nodes = bp.nodes.filter((n) => !['verify', 'progress'].includes(n.id))
+      if (shape === 'v2') bp.nodes = bp.nodes.filter((n) => n.id !== 'progress')
+      return bp
+    }
 
     // What earlier versions saved: six nodes, version 1, a plain `npm test` gate.
-    const v1 = fromPattern(PATTERNS[4])
-    v1.version = 1
-    v1.nodes = v1.nodes.filter((n) => !['verify', 'repair', 'progress'].includes(n.id))
+    const v1 = older(1, 'v1')
     expect(isStaleShippedAutopilot(v1)).toBe(true)
 
-    // What the previous version saved: the merged-result test and repair, but a plan-check agent after every item.
-    const v2 = fromPattern(PATTERNS[4])
-    v2.version = 2
-    v2.nodes = v2.nodes.filter((n) => n.id !== 'progress')
-    expect(isStaleShippedAutopilot(v2)).toBe(true)
+    // The merged-result test and repair, but a plan-check agent after every item.
+    expect(isStaleShippedAutopilot(older(2, 'v2'))).toBe(true)
+
+    // The plan gate and a repair agent (versions 3 to 5), with the literal or the templated command.
+    for (const v of [3, 4, 5]) expect(isStaleShippedAutopilot(older(v, 'v3'))).toBe(true)
+    const templated = older(5, 'v3')
+    const tt = templated.nodes.find((n) => n.id === 'tests')!
+    if (tt.kind === 'gate') tt.config.command = '{{test}}'
+    expect(isStaleShippedAutopilot(templated)).toBe(true)
+    expect(isStaleShippedAutopilot(current)).toBe(false) // this version
 
     // The person changed the test command: theirs, left alone.
     const edited = JSON.parse(JSON.stringify(v1)) as Blueprint
@@ -307,6 +329,28 @@ describe('run planning helpers', () => {
 
     // Some other flow that happens to be called Autopilot, already current.
     expect(isStaleShippedAutopilot({ ...v1, name: 'Mine' })).toBe(false)
+  })
+
+  it('says where each agent works: the builder in its own branch, a repairer after a Merge in the scratch copy', () => {
+    const autopilot = summarizeRun(fromPattern(PATTERNS[4])).agents
+    expect(autopilot).toHaveLength(1)
+    expect(autopilot[0]).toMatchObject({ label: 'Builder', ownBranch: true, inScratch: false })
+    // Land is where an agent edits the merge's scratch copy.
+    const land = summarizeRun(buildLandBlueprint({ branch: 'feat/x', base: 'main', testCommand: 'npm test', resolveConflicts: true })).agents
+    expect(land.find((a) => a.label === 'Repair the merged result')).toMatchObject({ ownBranch: false, inScratch: true, edits: true })
+  })
+
+  it('shows a flow as it will run: the test command and branch filled in, not {{test}} and {{base}}', () => {
+    const bp = fromPattern(PATTERNS[4])
+    const shown = resolveForDisplay(bp, { plan: 'planning/PLAN.md', base: 'develop', test: 'pytest -q' })
+    const s = summarizeRun(shown)
+    expect(s.commands.map((c) => c.command)).toEqual(['pytest -q', 'pytest -q'])
+    expect(s.merges.map((m) => m.base)).toEqual(['develop'])
+    expect(s.lands.map((l) => l.base)).toEqual(['develop'])
+    // The original is untouched, and the flow declares what it needs.
+    expect(JSON.stringify(bp)).toContain('{{test}}')
+    expect(bp.inputs.map((i) => i.name)).toEqual(['plan', 'base', 'test'])
+    expect(JSON.stringify(bp)).not.toContain('npm test')
   })
 
   describe('parallel sections', () => {

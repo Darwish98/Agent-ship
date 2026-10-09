@@ -7,7 +7,7 @@ interface RunsApi {
   runs: RunView[]
   /** The run to show for a flow: an active one, else the most recent. */
   runFor: (projectId: string, slug: string) => RunView | undefined
-  start: (projectId: string, slug: string, inputs: Record<string, string>) => Promise<StartRunResult>
+  start: (projectId: string, slug: string, inputs: Record<string, string>, limitUsd?: number) => Promise<StartRunResult>
   cancel: (runId: string) => Promise<void>
   resume: (runId: string) => Promise<StartRunResult>
   decide: (runId: string, approve: boolean, note: string) => Promise<void>
@@ -86,7 +86,7 @@ export function RunsProvider({ children }: { children: ReactNode }): JSX.Element
     () => ({
       runs,
       runFor,
-      start: (p, s, i) => window.agentShip.startRun(p, s, i),
+      start: (p, s, i, limit) => window.agentShip.startRun(p, s, i, limit),
       cancel: async (id) => void (await window.agentShip.cancelRun(id)),
       resume: (id) => window.agentShip.resumeRun(id),
       decide: async (id, approve, note) => void (await window.agentShip.decideGate(id, approve, note)),

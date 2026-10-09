@@ -1,7 +1,7 @@
 {
   "name": "agent-ship",
   "version": "0.2.0",
-  "description": "Live visualization of Claude Code agent activity as a building of project rooms",
+  "description": "Local-first desktop app for running coding agents on your repositories: branch-per-agent, gated by real tests, held to a spending limit",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -18,7 +18,8 @@
     "smoke": "node scripts/smoke.mjs",
     "smoke:parallel": "node scripts/smoke-parallel.mjs",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
-    "probe:tokens": "node scripts/probe-tokens.mjs"
+    "probe:tokens": "node scripts/probe-tokens.mjs",
+    "e2e:autopilot": "node scripts/e2e-autopilot.mjs"
   },
   "author": "",
   "license": "MIT",
